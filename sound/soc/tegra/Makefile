@@ -13,7 +13,8 @@ obj-$(CONFIG_SND_TEGRA_SOC_SPDIF) += snd-soc-tegra-spdif.o
 
 # Tegra machine Support
 snd-soc-tegra-harmony-objs := harmony.o
-snd-soc-tegra-seaboard-objs := seaboard.o
+snd-soc-tegra-shuttle-objs := shuttle.o
 
 obj-$(CONFIG_SND_TEGRA_SOC_HARMONY) += snd-soc-tegra-harmony.o
+obj-$(CONFIG_SND_TEGRA_SOC_SHUTTLE) += snd-soc-tegra-shuttle.o
 obj-$(CONFIG_SND_TEGRA_SOC_SEABOARD) += snd-soc-tegra-seaboard.o

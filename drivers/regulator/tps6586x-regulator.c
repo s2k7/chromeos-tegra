@@ -2,6 +2,7 @@
  * Regulator driver for TI TPS6586x
  *
  * Copyright (C) 2010 Compulab Ltd.
+ * Copyright (C) 2011 Eduardo José Tagle
  * Author: Mike Rapoport <mike@compulab.co.il>
  *
  * Based on da903x
@@ -85,8 +86,7 @@ static int tps6586x_ldo_list_voltage(struct regulator_dev *rdev,
 
 static int __tps6586x_ldo_set_voltage(struct device *parent,
 				      struct tps6586x_regulator *ri,
-				      int min_uV, int max_uV,
-				      unsigned *selector)
+				      int min_uV, int max_uV)
 {
 	int val, uV;
 	uint8_t mask;
@@ -101,8 +101,6 @@ static int __tps6586x_ldo_set_voltage(struct device *parent,
 		/* use the first in-range value */
 		if (min_uV <= uV && uV <= max_uV) {
 
-			*selector = val;
-
 			val <<= ri->volt_shift;
 			mask = ((1 << ri->volt_nbits) - 1) << ri->volt_shift;
 
@@ -114,13 +112,12 @@ static int __tps6586x_ldo_set_voltage(struct device *parent,
 }
 
 static int tps6586x_ldo_set_voltage(struct regulator_dev *rdev,
-				    int min_uV, int max_uV, unsigned *selector)
+				    int min_uV, int max_uV, unsigned* selector)
 {
 	struct tps6586x_regulator *ri = rdev_get_drvdata(rdev);
 	struct device *parent = to_tps6586x_dev(rdev);
 
-	return __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV,
-					  selector);
+	return __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV);
 }
 
 static int tps6586x_ldo_get_voltage(struct regulator_dev *rdev)
@@ -144,14 +141,13 @@ static int tps6586x_ldo_get_voltage(struct regulator_dev *rdev)
 }
 
 static int tps6586x_dvm_set_voltage(struct regulator_dev *rdev,
-				    int min_uV, int max_uV, unsigned *selector)
+				    int min_uV, int max_uV, unsigned* selector)
 {
 	struct tps6586x_regulator *ri = rdev_get_drvdata(rdev);
 	struct device *parent = to_tps6586x_dev(rdev);
 	int ret;
 
-	ret = __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV,
-					 selector);
+	ret = __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV);
 	if (ret)
 		return ret;
 
@@ -190,6 +186,38 @@ static int tps6586x_regulator_is_enabled(struct regulator_dev *rdev)
 	return !!(reg_val & (1 << ri->enable_bit[0]));
 }
 
+static int tps6586x_fixed_regulator_enable(struct regulator_dev *rdev)
+{
+	struct tps6586x_regulator *ri = rdev_get_drvdata(rdev);
+	struct device *parent = to_tps6586x_dev(rdev);
+
+	return tps6586x_clr_bits(parent, ri->enable_reg[0],
+				 1 << ri->enable_bit[0]);
+}
+
+static int tps6586x_fixed_regulator_disable(struct regulator_dev *rdev)
+{
+	struct tps6586x_regulator *ri = rdev_get_drvdata(rdev);
+	struct device *parent = to_tps6586x_dev(rdev);
+
+	return tps6586x_set_bits(parent, ri->enable_reg[0],
+				 1 << ri->enable_bit[0]);
+}
+
+static int tps6586x_fixed_regulator_is_enabled(struct regulator_dev *rdev)
+{
+	struct tps6586x_regulator *ri = rdev_get_drvdata(rdev);
+	struct device *parent = to_tps6586x_dev(rdev);
+	uint8_t reg_val;
+	int ret;
+
+	ret = tps6586x_read(parent, ri->enable_reg[0], &reg_val);
+	if (ret)
+		return ret;
+
+	return !(reg_val & (1 << ri->enable_bit[0]));
+}
+
 static struct regulator_ops tps6586x_regulator_ldo_ops = {
 	.list_voltage = tps6586x_ldo_list_voltage,
 	.get_voltage = tps6586x_ldo_get_voltage,
@@ -208,6 +236,12 @@ static struct regulator_ops tps6586x_regulator_dvm_ops = {
 	.is_enabled = tps6586x_regulator_is_enabled,
 	.enable = tps6586x_regulator_enable,
 	.disable = tps6586x_regulator_disable,
+};
+
+static struct regulator_ops tps6586x_regulator_fixed_ops = {
+	.is_enabled = tps6586x_fixed_regulator_is_enabled,
+	.enable = tps6586x_fixed_regulator_enable,
+	.disable = tps6586x_fixed_regulator_disable,
 };
 
 static int tps6586x_ldo_voltages[] = {
@@ -254,6 +288,21 @@ static int tps6586x_dvm_voltages[] = {
 	.enable_bit[1]	= (ebit1),					\
 	.voltages	= tps6586x_##vdata##_voltages,
 
+#define TPS6586X_FIXED_REGULATOR(_id, _ops,	\
+			   ereg0, ebit0)			\
+	.desc	= {							\
+		.name	= "REG-" #_id,					\
+		.ops	= &tps6586x_regulator_##_ops,			\
+		.type	= REGULATOR_VOLTAGE,				\
+		.id	= TPS6586X_ID_##_id,				\
+		.owner	= THIS_MODULE,					\
+	},								\
+	.enable_reg[0]	= TPS6586X_SUPPLY##ereg0,			\
+	.enable_bit[0]	= (ebit0),					\
+	.enable_reg[1]	= TPS6586X_SUPPLY##ereg0,			\
+	.enable_bit[1]	= (ebit0),
+
+	
 #define TPS6586X_REGULATOR_DVM_GOREG(goreg, gobit)			\
 	.go_reg = TPS6586X_##goreg,					\
 	.go_bit = (gobit),
@@ -273,6 +322,12 @@ static int tps6586x_dvm_voltages[] = {
 	TPS6586X_REGULATOR_DVM_GOREG(goreg, gobit)			\
 }
 
+#define TPS6586X_FIXED(_id,			\
+		     ereg0, ebit0)		\
+{									\
+	TPS6586X_FIXED_REGULATOR(_id, fixed_ops, ereg0, ebit0)			\
+}
+
 static struct tps6586x_regulator tps6586x_regulator[] = {
 	TPS6586X_LDO(LDO_0, ldo, SUPPLYV1, 5, 3, ENC, 0, END, 0),
 	TPS6586X_LDO(LDO_3, ldo, SUPPLYV4, 0, 3, ENC, 2, END, 2),
@@ -289,6 +344,8 @@ static struct tps6586x_regulator tps6586x_regulator[] = {
 	TPS6586X_DVM(LDO_4, ldo4, LDO4V1, 0, 5, ENC, 3, END, 3, VCC1, 6),
 	TPS6586X_DVM(SM_0, dvm, SM0V1, 0, 5, ENA, 1, ENB, 1, VCC1, 2),
 	TPS6586X_DVM(SM_1, dvm, SM1V1, 0, 5, ENA, 0, ENB, 0, VCC1, 0),
+	
+	TPS6586X_FIXED(LDO_SOC, ENE, 3),
 };
 
 /*
@@ -352,7 +409,7 @@ static int __devinit tps6586x_regulator_probe(struct platform_device *pdev)
 	int id = pdev->id;
 	int err;
 
-	dev_dbg(&pdev->dev, "Probing reulator %d\n", id);
+	dev_dbg(&pdev->dev, "Probing regulator %d\n", id);
 
 	ri = find_regulator_info(id);
 	if (ri == NULL) {

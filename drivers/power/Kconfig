@@ -182,6 +182,12 @@ config BATTERY_INTEL_MID
 	  Say Y here to enable the battery driver on Intel MID
 	  platforms.
 
+config BATTERY_TPS6586X
+	tristate "Battery driver for Texas TPS6586x"
+	depends on MFD_TPS6586X
+	help
+	  Say Y here to enable the battery driver of the TPS6586x
+	  
 config CHARGER_ISP1704
 	tristate "ISP1704 USB Charger Detection"
 	depends on USB_OTG_UTILS
