@@ -16,6 +16,7 @@
 
 #include <linux/delay.h>
 #include <linux/gpio.h>
+#include <linux/version.h>
 #include <linux/regulator/consumer.h>
 #include <linux/resource.h>
 #include <linux/platform_device.h>
@@ -65,7 +66,9 @@ static int shuttle_backlight_notify(struct device *unused, int brightness)
 	return brightness;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 static int shuttle_disp1_check_fb(struct device *dev, struct fb_info *info);
+#endif
 
 static struct platform_pwm_backlight_data shuttle_backlight_data = {
 	.pwm_id		= SHUTTLE_BL_PWM_ID,
@@ -75,8 +78,10 @@ static struct platform_pwm_backlight_data shuttle_backlight_data = {
 	.init		= shuttle_backlight_init,
 	.exit		= shuttle_backlight_exit,
 	.notify		= shuttle_backlight_notify,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 	/* Only toggle backlight on fb blank notifications for disp1 */
 	.check_fb	= shuttle_disp1_check_fb,
+#endif
 };
 
 static struct platform_device shuttle_panel_bl_driver = {
@@ -101,30 +106,51 @@ static int shuttle_panel_disable(void)
 
 static struct regulator *shuttle_hdmi_reg = NULL;
 static struct regulator *shuttle_hdmi_pll = NULL;
-static struct regulator *shuttle_hdmi_vddio_vid = NULL;
+static int shuttle_hdmi_enabled = false;
 
 static int shuttle_hdmi_enable(void)
 {
-	if (WARN_ON(!shuttle_hdmi_reg || !shuttle_hdmi_pll))
-		return -ENODEV;
-
+	if (shuttle_hdmi_enabled)
+		return 0;
+		
 	gpio_set_value(SHUTTLE_HDMI_ENB, 1);
+	
+	shuttle_hdmi_reg = regulator_get(NULL, "avdd_hdmi");
+	if (IS_ERR_OR_NULL(shuttle_hdmi_reg)) {
+		gpio_set_value(SHUTTLE_HDMI_ENB, 0);
+		return PTR_ERR(shuttle_hdmi_reg);
+	}
+
+	shuttle_hdmi_pll = regulator_get(NULL, "avdd_hdmi_pll");
+	if (IS_ERR_OR_NULL(shuttle_hdmi_pll)) {
+		regulator_put(shuttle_hdmi_reg);
+		shuttle_hdmi_reg = NULL;
+		gpio_set_value(SHUTTLE_HDMI_ENB, 0);
+		return PTR_ERR(shuttle_hdmi_pll);
+	}
+	
 	regulator_enable(shuttle_hdmi_reg);
 	regulator_enable(shuttle_hdmi_pll);
+	shuttle_hdmi_enabled = true;
 	return 0;
 }
 
 static int shuttle_hdmi_disable(void)
 {
-	if (WARN_ON(!shuttle_hdmi_reg || !shuttle_hdmi_pll))
-		return -ENODEV;
-
+	if (!shuttle_hdmi_enabled)
+		return 0;
+		
 	gpio_set_value(SHUTTLE_HDMI_ENB, 0);
+	
 	regulator_disable(shuttle_hdmi_reg);
 	regulator_disable(shuttle_hdmi_pll);
+	regulator_put(shuttle_hdmi_reg);
+	shuttle_hdmi_reg = NULL;
+	regulator_put(shuttle_hdmi_pll);
+	shuttle_hdmi_pll = NULL;
+	shuttle_hdmi_enabled = false;
 	return 0;
 }
-
 
 #define TEGRA_ROUND_ALLOC(x) (((x) + 4095) & ((unsigned)(-4096)))
 
@@ -216,36 +242,7 @@ static struct tegra_fb_data shuttle_fb_data = {
 
 #elif defined(SHUTTLE_1024x600PANEL1)
 
-
 /* If using 1024x600 panel (Shuttle default panel) */
-
-/* Frame buffer size assuming 16bpp color */
-#define SHUTTLE_FB_SIZE TEGRA_ROUND_ALLOC(1024*600*(16/8)*SHUTTLE_FB_PAGES)
-
-static struct tegra_dc_mode shuttle_panel_modes[] = {
-	{
-		.pclk = 62200000,
-		.h_ref_to_sync = 11,
-		.v_ref_to_sync = 1,
-		.h_sync_width = 26,
-		.v_sync_width = 6,
-		.h_back_porch = 12,
-		.v_back_porch = 3,
-		.h_active = 1024,
-		.v_active = 600,
-		.h_front_porch = 45,
-		.v_front_porch = 3,
-	},
-};
-
-static struct tegra_fb_data shuttle_fb_data = {
-	.win		= 0,
-	.xres		= 1024,
-	.yres		= 600,
-	.bits_per_pixel	= 16,
-};
-
-#else
 
 /* Frame buffer size assuming 16bpp color */
 #define SHUTTLE_FB_SIZE TEGRA_ROUND_ALLOC(1024*600*(16/8)*SHUTTLE_FB_PAGES)
@@ -263,6 +260,34 @@ static struct tegra_dc_mode shuttle_panel_modes[] = {
 		.v_active = 600,
 		.h_front_porch = 34,
 		.v_front_porch = 4,
+	},
+};
+
+static struct tegra_fb_data shuttle_fb_data = {
+	.win		= 0,
+	.xres		= 1024,
+	.yres		= 600,
+	.bits_per_pixel	= 16,
+};
+
+#else
+
+/* Frame buffer size assuming 16bpp color */
+#define SHUTTLE_FB_SIZE TEGRA_ROUND_ALLOC(1024*600*(16/8)*SHUTTLE_FB_PAGES)
+
+static struct tegra_dc_mode shuttle_panel_modes[] = {
+	{
+		.pclk = 62200000,
+		.h_ref_to_sync = 11,
+		.v_ref_to_sync = 1,
+		.h_sync_width = 26,
+		.v_sync_width = 6,
+		.h_back_porch = 12,
+		.v_back_porch = 3,
+		.h_active = 1024,
+		.v_active = 600,
+		.h_front_porch = 45,
+		.v_front_porch = 3,
 	},
 };
 
@@ -408,10 +433,12 @@ static struct nvhost_device shuttle_disp1_device = {
 	},
 };
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 static int shuttle_disp1_check_fb(struct device *dev, struct fb_info *info)
 {
 	return info->device == &shuttle_disp1_device.dev;
 }
+#endif
 
 static struct nvhost_device shuttle_disp2_device = {
 	.name		= "tegradc",
@@ -454,12 +481,12 @@ static struct platform_device shuttle_nvmap_device = {
 };
 
 static struct platform_device *shuttle_gfx_devices[] __initdata = {
-	&tegra_gart_device,
 	&shuttle_nvmap_device,
 	&tegra_grhost_device,
-	&tegra_avp_device,
-	&tegra_pwfm2_device,
+	&tegra_pwfm0_device,
 	&shuttle_panel_bl_driver,
+	&tegra_gart_device,
+	&tegra_avp_device,
 };
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -481,12 +508,12 @@ static void shuttle_panel_late_resume(struct early_suspend *h)
 }
 #endif 
 
-/* Called to init memory areas used to display . The memory areas are reserved
-   by a call to tegra_reserve */
-void __init shuttle_gpu_initialize_areas(void)
+int __init shuttle_gpu_register_devices(void)
 {
 	struct resource *res;
-
+	int err;
+	
+#if defined(DYNAMIC_GPU_MEM)
 	/* Plug in framebuffer 1 memory area and size */
 	if (tegra_fb_start > 0 && tegra_fb_size > 0) {
 		res = nvhost_get_resource_byname(&shuttle_disp1_device,
@@ -508,11 +535,7 @@ void __init shuttle_gpu_initialize_areas(void)
 		shuttle_carveouts[1].base = tegra_carveout_start;
 		shuttle_carveouts[1].size = tegra_carveout_size;
 	}
-}
-
-int __init shuttle_gpu_register_devices(void)
-{
-	int err;
+#endif
 
 	gpio_request(SHUTTLE_EN_VDD_PANEL, "en_vdd_pnl");
 	gpio_direction_output(SHUTTLE_EN_VDD_PANEL, 1);
@@ -536,12 +559,14 @@ int __init shuttle_gpu_register_devices(void)
 	err = platform_add_devices(shuttle_gfx_devices,
 				   ARRAY_SIZE(shuttle_gfx_devices));
 				   
+#if defined(DYNAMIC_GPU_MEM)				   
 	/* Move the bootloader framebuffer to our framebuffer */
 	if (tegra_bootloader_fb_start > 0 && tegra_fb_start > 0 &&
 		tegra_fb_size > 0 && tegra_bootloader_fb_size > 0) {
 		tegra_move_framebuffer(tegra_fb_start, tegra_bootloader_fb_start,
 			min(tegra_fb_size, tegra_bootloader_fb_size)); 		
 	}		
+#endif
 
 	/* Register the framebuffers */
 	if (!err)
@@ -553,49 +578,7 @@ int __init shuttle_gpu_register_devices(void)
 	return err;
 }
 
-static int __init shuttle_hdmi_late_init(void)
-{
-	int ret;
-
-	shuttle_hdmi_reg = regulator_get(NULL, "avdd_hdmi");
-	if (IS_ERR_OR_NULL(shuttle_hdmi_reg)) {
-		ret = PTR_ERR(shuttle_hdmi_reg);
-		goto fail;
-	}
-
-	shuttle_hdmi_pll = regulator_get(NULL, "avdd_hdmi_pll");
-	if (IS_ERR_OR_NULL(shuttle_hdmi_pll)) {
-		ret = PTR_ERR(shuttle_hdmi_pll);
-		goto fail;
-	}
-
-	shuttle_hdmi_vddio_vid = regulator_get(NULL, "vddio_vid");
-	if (IS_ERR_OR_NULL(shuttle_hdmi_vddio_vid)) {
-		ret = PTR_ERR(shuttle_hdmi_vddio_vid);
-		goto fail;
-	}
-		
-	/* Enable this regulator so we can get HotPlug detection of HDMI */
-	regulator_enable(shuttle_hdmi_vddio_vid);
-		
-	return 0;
-
-fail:
-	if (shuttle_hdmi_pll) {
-		regulator_disable(shuttle_hdmi_pll);
-		shuttle_hdmi_pll = NULL;
-	}
-
-	if (shuttle_hdmi_reg) {
-		regulator_disable(shuttle_hdmi_reg);
-		shuttle_hdmi_reg = NULL;
-	}
-
-	return ret;
-}
-
-late_initcall(shuttle_hdmi_late_init);
-
+#if defined(DYNAMIC_GPU_MEM)
 int __init shuttle_protected_aperture_init(void)
 {
 	if (tegra_grhost_aperture > 0) {
@@ -604,4 +587,5 @@ int __init shuttle_protected_aperture_init(void)
 	return 0;
 }
 late_initcall(shuttle_protected_aperture_init);
+#endif
 

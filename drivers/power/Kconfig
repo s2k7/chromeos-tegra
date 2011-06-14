@@ -22,6 +22,14 @@ config PDA_POWER
 	  one or two external power supplies (AC/USB) connected to main and
 	  backup batteries, and optional builtin charger.
 
+config NVEC_POWER
+	tristate "NVidia Embedded controller Power driver"
+	depends on MFD_NVEC
+	help
+	  Say Y here to enable Nvidia embedded controller power driver for
+	  Tegra2 based boards
+
+	  
 config APM_POWER
 	tristate "APM emulation for class batteries"
 	depends on APM_EMULATION
@@ -35,6 +43,13 @@ config MAX8925_POWER
 	help
 	  Say Y here to enable support for the battery charger in the Maxim
 	  MAX8925 PMIC.
+
+config MAX8907C_CHARGER
+	tristate "MAX8907c charger support"
+	depends on MFD_MAX8907C
+	help
+	  Say Y here to enable support for the charger in the Maxim
+	  MAX8907c PMIC.
 
 config WM831X_BACKUP
 	tristate "WM831X backup battery charger support"
@@ -64,7 +79,8 @@ config TEST_POWER
 
 config BATTERY_DS2760
 	tristate "DS2760 battery driver (HP iPAQ & others)"
-	depends on W1 && W1_SLAVE_DS2760
+	select W1
+	select W1_SLAVE_DS2760
 	help
 	  Say Y here to enable support for batteries with ds2760 chip.
 
@@ -109,11 +125,10 @@ config BATTERY_WM97XX
 	  Say Y to enable support for battery measured by WM97xx aux port.
 
 config BATTERY_BQ20Z75
-        tristate "TI BQ20z75 gas gauge"
-        depends on I2C
-        help
-         Say Y to include support for TI BQ20z75 SBS-compliant
-         gas gauge and protection IC.
+	tristate "TI BQ20Z75 Fuel gauge"
+	depends on I2C
+	help
+	 Say Y to include support for TI BQ20Z75 (I2C) fuel gauge chips.
 
 config BATTERY_BQ27x00
 	tristate "BQ27x00 battery driver"
@@ -135,16 +150,6 @@ config BATTERY_MAX17040
 	  MAX17040 is fuel-gauge systems for lithium-ion (Li+) batteries
 	  in handheld and portable equipment. The MAX17040 is configured
 	  to operate with a single lithium cell
-
-config BATTERY_MAX17042
-	tristate "Maxim MAX17042/8997/8966 Fuel Gauge"
-	depends on I2C
-	help
-	  MAX17042 is fuel-gauge systems for lithium-ion (Li+) batteries
-	  in handheld and portable equipment. The MAX17042 is configured
-	  to operate with a single lithium cell. MAX8997 and MAX8966 are
-	  multi-function devices that include fuel gauages that are compatible
-	  with MAX17042.
 
 config BATTERY_Z2
 	tristate "Z2 battery driver"
@@ -188,27 +193,5 @@ config BATTERY_TPS6586X
 	help
 	  Say Y here to enable the battery driver of the TPS6586x
 	  
-config CHARGER_ISP1704
-	tristate "ISP1704 USB Charger Detection"
-	depends on USB_OTG_UTILS
-	help
-	  Say Y to enable support for USB Charger Detection with
-	  ISP1707/ISP1704 USB transceivers.
-
-config CHARGER_TWL4030
-	tristate "OMAP TWL4030 BCI charger driver"
-	depends on TWL4030_CORE
-	help
-	  Say Y here to enable support for TWL4030 Battery Charge Interface.
-
-config CHARGER_GPIO
-	tristate "GPIO charger"
-	depends on GPIOLIB
-	help
-	  Say Y to include support for chargers which report their online status
-	  through a GPIO pin.
-
-	  This driver can be build as a module. If so, the module will be
-	  called gpio-charger.
 
 endif # POWER_SUPPLY

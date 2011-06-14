@@ -22,7 +22,6 @@
 #include <linux/clk.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
-#include <linux/platform_data/tegra_usb.h>
 #include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/reboot.h>
@@ -400,6 +399,8 @@ static struct tegra_nand_chip_parms shuttle_nand_chip_parms[] = {
 	32768K@149632K(cache),
 	4096K@182912K(staging),
 	336256K@187520K(userdata)
+	
+	Can be overriden from the command line
 */
 	
 static struct mtd_partition shuttle_nand_partitions[] = {
@@ -442,7 +443,7 @@ static struct mtd_partition shuttle_nand_partitions[] = {
 	},
 };
 
-struct tegra_nand_platform shuttle_nand_data = {
+static struct tegra_nand_platform shuttle_nand_data = {
 	.max_chips	= 8,
 	.chip_parms	= shuttle_nand_chip_parms,
 	.nr_chip_parms  = ARRAY_SIZE(shuttle_nand_chip_parms),
@@ -470,12 +471,12 @@ struct platform_device tegra_nand_device = {
 
 int __init shuttle_nand_register_devices(void)
 {
+
 	/* Enable writes on NAND */
 	gpio_request(SHUTTLE_NAND_WPN, "nand_wp#");
 	gpio_direction_output(SHUTTLE_NAND_WPN, 1);
 
 	platform_device_register(&tegra_nand_device);
-
 	return 0;
 } 
 

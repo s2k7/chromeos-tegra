@@ -153,6 +153,15 @@ static int gpio_shortlong_key_probe(struct platform_device *pdev)
 	set_bit(ctx->short_press_keycode,ctx->button_dev->keybit) ;
 	set_bit(ctx->long_press_keycode,ctx->button_dev->keybit) ;
 
+	input_set_drvdata(ctx->button_dev, ctx);
+	ctx->button_dev->name = pdev->name;
+	ctx->button_dev->phys = "gpio-shortlong-keys/input0";
+	ctx->button_dev->dev.parent = &pdev->dev;
+	ctx->button_dev->id.bustype = BUS_HOST;
+	ctx->button_dev->id.vendor = 0x0001;
+	ctx->button_dev->id.product = 0x0001;
+	ctx->button_dev->id.version = 0x0100;
+	
 	if (input_register_device(ctx->button_dev)) {
 		dev_err(&pdev->dev, "Failed to register input device\n");
 		input_free_device(ctx->button_dev);
@@ -183,7 +192,9 @@ static int gpio_shortlong_key_probe(struct platform_device *pdev)
 		return -ENXIO;
     }
 
-	platform_set_drvdata(pdev, ctx);	
+	platform_set_drvdata(pdev, ctx);
+	
+	
 	dev_info(&pdev->dev, "Started\n");
 	
 	return 0;

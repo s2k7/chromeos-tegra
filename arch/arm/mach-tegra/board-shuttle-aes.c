@@ -21,7 +21,6 @@
 #include <linux/clk.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
-#include <linux/platform_data/tegra_usb.h>
 #include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/reboot.h>

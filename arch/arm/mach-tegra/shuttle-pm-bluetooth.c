@@ -15,8 +15,11 @@
  *
  */ 
 
+/* Bluetooth is an HCI UART device attached to UART2, and requires a 32khz blink clock */
+ 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/clk.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/err.h>
@@ -40,6 +43,7 @@
 
 struct shuttle_pm_bt_data {
 	struct regulator *regulator;
+	struct clk *clk;
 	struct rfkill *rfkill;
 	int pre_resume_state;
 	int state;
@@ -50,15 +54,15 @@ static void __shuttle_pm_bt_toggle_radio(struct device *dev, unsigned int on)
 {
 	struct shuttle_pm_bt_data *bt_data = dev_get_drvdata(dev);
 
-	dev_info(dev, "__shuttle_pm_bt_toggle_radio %d\n", on);
-
 	/* Avoid turning it on if already on */
 	if (bt_data->state == on)
 		return;
 	
 	if (on) {
+		dev_info(dev, "Enabling Bluetooth\n");
 	
 		regulator_enable(bt_data->regulator);
+		clk_enable(bt_data->clk);
 	
 		/* Bluetooth power on sequence */
 		gpio_set_value(SHUTTLE_BT_RESET, 0); /* Assert reset */
@@ -67,9 +71,11 @@ static void __shuttle_pm_bt_toggle_radio(struct device *dev, unsigned int on)
 		msleep(2);
 
 	} else {
-	
+		dev_info(dev, "Disabling Bluetooth\n");
+		
 		gpio_set_value(SHUTTLE_BT_RESET, 0); /* Assert reset */
 		
+		clk_disable(bt_data->clk);
 		regulator_disable(bt_data->regulator);
 	}
 	
@@ -173,10 +179,11 @@ static int __init shuttle_bt_probe(struct platform_device *pdev)
 {
 	struct rfkill *rfkill;
 	struct regulator *regulator;
+	struct clk *clk;
 	struct shuttle_pm_bt_data *bt_data;
 	int ret;
 
-	dev_info(&pdev->dev, "starting\n");
+	dev_dbg(&pdev->dev, "starting\n");
 
 	bt_data = kzalloc(sizeof(*bt_data), GFP_KERNEL);
 	if (!bt_data) {
@@ -189,9 +196,17 @@ static int __init shuttle_bt_probe(struct platform_device *pdev)
 	if (IS_ERR(regulator)) {
 		dev_err(&pdev->dev, "Failed to get regulator\n");
 		ret = -ENODEV;
-		goto err3;
+		goto err4;
 	}
 	bt_data->regulator = regulator;
+	
+	clk = clk_get(&pdev->dev, "blink");
+	if (IS_ERR(clk)) {
+		dev_err(&pdev->dev, "Failed to get clock\n");
+		ret = -ENODEV;
+		goto err3;
+	}
+	bt_data->clk = clk;
 
 	/* Init io pins */
 	gpio_request(SHUTTLE_BT_RESET, "bluetooth_reset");
@@ -216,7 +231,7 @@ static int __init shuttle_bt_probe(struct platform_device *pdev)
 		goto err1;
 	}
 
-	dev_info(&pdev->dev, "registered\n");	
+	dev_info(&pdev->dev, "Bluetooth RFKill driver registered\n");	
 	
 	return sysfs_create_group(&pdev->dev.kobj, &shuttle_bt_attr_group);
 	
@@ -224,9 +239,12 @@ err1:
 	rfkill_destroy(rfkill);
 	bt_data->rfkill = NULL;
 err2:
+	clk_put(clk);
+	bt_data->clk = NULL;
+err3:
 	regulator_put(regulator);
 	bt_data->regulator = NULL;
-err3:
+err4:
 	kfree(bt_data);
 	dev_set_drvdata(&pdev->dev, NULL);
 	return ret;
@@ -249,6 +267,7 @@ static int shuttle_bt_remove(struct platform_device *pdev)
 	__shuttle_pm_bt_toggle_radio(&pdev->dev, 0);
 
 	regulator_put(bt_data->regulator);
+	clk_put(bt_data->clk);
 
 	kfree(bt_data);
 	return 0;

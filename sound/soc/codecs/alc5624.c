@@ -10,6 +10,7 @@
  *
  */
 #include <linux/module.h>
+#include <linux/version.h>
 #include <linux/moduleparam.h>
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -18,13 +19,16 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/i2c.h>
+#include <linux/clk.h>
 #include <linux/platform_device.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
+#include <sound/soc-dapm.h>
 #include <sound/tlv.h>
 #include <sound/soc.h> 
 #include <sound/initval.h>
+#include <sound/alc5624.h>
 
 /* Index of Codec Register definitions */
 #define ALC5624_RESET					0x00	/* RESET CODEC TO DEFAULT */
@@ -469,19 +473,6 @@
 
 #define IDX_AD_DA_MIXER_INTERNAL	0x54	/* AD DA internal mixer register */
 
-/* codec private data */
-struct alc5624_priv {
-	enum snd_soc_control_type control_type;
-	void *control_data;
-	struct mutex mutex;
-	u8 id;
-	unsigned int sysclk;
-	
-	/* original R/W functions */
-	unsigned int (*bus_hw_read)(struct snd_soc_codec *codec, unsigned int reg);
-	int (*bus_hw_write)(void*,const char*, int);  /* codec->control_data(->struct i2c_client), pdata, datalen */
-	void *bus_control_data;			/* bus control_data to use when calling the original bus fns */
-};
 
 /* virtual HP mixers regs */
 #define VIRTUAL_HPL_MIXER	(ALC5624_VENDOR_ID2+2)
@@ -526,6 +517,28 @@ struct alc5624_priv {
 #define VIRTUAL_IDX_AD_DA_MIXER_INTERNAL 	(VIRTUAL_IDX_BASE+IDX_AD_DA_MIXER_INTERNAL)
 
 #define REGISTER_COUNT (VIRTUAL_IDX_AD_DA_MIXER_INTERNAL + 2)
+
+/* codec private data */
+struct alc5624_priv {
+
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	/* Older versions of ALSA SoC require from us to hold the register
+	   cache ourselves and a codec reference */
+	struct snd_soc_codec codec;
+	u16 reg_cache[REGISTER_COUNT];
+#endif
+	struct clk* mclk;				/* the master clock */
+	enum snd_soc_control_type control_type;
+	void *control_data;
+	u8 id;
+	unsigned int sysclk;
+	
+	/* original R/W functions */
+	unsigned int (*bus_hw_read)(struct snd_soc_codec *codec, unsigned int reg);
+	int (*bus_hw_write)(void*,const char*, int);  /* codec->control_data(->struct i2c_client), pdata, datalen */
+	void *bus_control_data;			/* bus control_data to use when calling the original bus fns */
+};
+
 
 static const struct {
 	u16 reg;	/* register */
@@ -870,8 +883,8 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	/* virtual mixer - mixes left & right channels for spk and mono */
 	{"IIS Mixer", NULL, "Left DAC"},
 	{"IIS Mixer", NULL, "Right DAC"},
-	{"Line Mixer", NULL, "Right Line In"},
 	{"Line Mixer", NULL, "Left Line In"},
+	{"Line Mixer", NULL, "Right Line In"},	
 	{"HP Mixer", NULL, "Left HP Mixer"},
 	{"HP Mixer", NULL, "Right HP Mixer"},
 	
@@ -1229,8 +1242,13 @@ static int get_coeff(int mclk, int rate)
 static int alc5624_pcm_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *params, struct snd_soc_dai *dai)
 {
-struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	struct snd_soc_device *socdev = rtd->socdev;
+	struct snd_soc_codec *codec = socdev->card->codec;
+#else	
 	struct snd_soc_codec *codec = rtd->codec;
+#endif
 	struct alc5624_priv *alc5624 = snd_soc_codec_get_drvdata(codec);
 	
 	u16 iface=snd_soc_read(codec,ALC5624_MAIN_SDP_CTRL)&0xfff3;
@@ -1266,7 +1284,7 @@ struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	return 0;
 }
 
-static int alc5624_mute(struct snd_soc_dai *dai, int mute)
+static int alc5624_digital_mute(struct snd_soc_dai *dai, int mute)
 {
 	struct snd_soc_codec *codec = dai->codec;
 	dev_dbg(codec->dev, "%s()\n", __FUNCTION__);
@@ -1319,7 +1337,12 @@ static int alc5624_set_bias_level(struct snd_soc_codec *codec,
 	
 		break;
 	}
+	
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
 	codec->dapm.bias_level = level;
+#else
+	codec->bias_level = level;
+#endif
 	return 0;
 }
  
@@ -1332,13 +1355,17 @@ static struct snd_soc_dai_ops alc5624_dai_ops = {
 		.startup		= alc5624_dai_startup,
 		.shutdown		= alc5624_dai_shutdown,
 		.hw_params 		= alc5624_pcm_hw_params,
-		.digital_mute 	= alc5624_mute,
+		.digital_mute 	= alc5624_digital_mute,
 		.set_fmt 		= alc5624_set_dai_fmt,
 		.set_sysclk 	= alc5624_set_dai_sysclk,
 		.set_pll 		= alc5624_set_dai_pll,
 };
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
 static struct snd_soc_dai_driver alc5624_dai = {
+#else
+struct snd_soc_dai alc5624_dai = {
+#endif
 	.name = "alc5624-hifi",
 	.playback = {
 		.stream_name = "Playback",
@@ -1360,9 +1387,17 @@ static struct snd_soc_dai_driver alc5624_dai = {
 	.symmetric_rates = 1,
 }; 
 
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+EXPORT_SYMBOL_GPL(alc5624_dai);
+#endif
+
 /* Check if a register is volatile or not to forbid or not caching its value */
-static int rt5424_volatile_register(struct snd_soc_codec *codec,
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+static int alc5624_volatile_register(struct snd_soc_codec *codec,
 	unsigned int reg)
+#else
+static int alc5624_volatile_register(unsigned int reg)
+#endif
 {
 	if (reg == ALC5624_PD_CTRL_STAT ||
 		reg == ALC5624_GPIO_PIN_STATUS ||
@@ -1380,8 +1415,14 @@ static unsigned int alc5624_hw_read(struct snd_soc_codec *codec,
 	struct alc5624_priv *alc5624 = snd_soc_codec_get_drvdata(codec);
 	
 	/* If it is a real register, call the original bus access function */
-	if (reg <= ALC5624_VENDOR_ID2)
-		return alc5624->bus_hw_read(codec,reg);
+	if (reg <= ALC5624_VENDOR_ID2) {
+		/* bus_hw_read expects that codec->control_data is pointing to 
+		   the original control_data.That is the only field accessed. Create
+		   a temporary struct with the required data */
+		struct snd_soc_codec tmpcodec;
+		tmpcodec.control_data = alc5624->bus_control_data;
+		return alc5624->bus_hw_read(&tmpcodec,reg);
+	}
 	
 	/* If dealing with one of the virtual mixers, return 0. This fn 
 	   won't be called anymore, as the cache will hold the written
@@ -1395,6 +1436,7 @@ static unsigned int alc5624_hw_read(struct snd_soc_codec *codec,
 	if (reg >= VIRTUAL_IDX_BASE &&
 		reg < REGISTER_COUNT) {
 		
+		struct snd_soc_codec tmpcodec;		
 		u8 data[3];
 		int ret;
 		
@@ -1405,8 +1447,12 @@ static unsigned int alc5624_hw_read(struct snd_soc_codec *codec,
 		if ((ret = alc5624->bus_hw_write(alc5624->bus_control_data,data,3)) < 0)
 			return ret;
 			
-		/* Get its value and return it */
-		return alc5624->bus_hw_read(codec,ALC5624_INDEX_DATA);
+		/* Get its value and return it:  */
+		/* bus_hw_read expects that codec->control_data is pointing to 
+		   the original control_data.That is the only field accessed. Create
+		   a temporary struct with the required data */
+		tmpcodec.control_data = alc5624->bus_control_data;
+		return alc5624->bus_hw_read(&tmpcodec,ALC5624_INDEX_DATA);
 	}
 	
 	/* Register does not exist */
@@ -1468,14 +1514,18 @@ static int alc5624_reset(struct snd_soc_codec *codec)
 	return alc5624->bus_hw_write(alc5624->bus_control_data, data, 3);
 }
 
+
 /* Fetch register values from the hw */
 static void alc5624_fill_cache(struct snd_soc_codec *codec)
 {
 	/*struct alc5624_priv *alc5624 = snd_soc_codec_get_drvdata(codec);*/
-	int i, step = codec->driver->reg_cache_step;
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	int i, step = 2, size = REGISTER_COUNT;
+#else
+	int i, step = codec->driver->reg_cache_step, size = codec->driver->reg_cache_size;
+#endif
 	u16 *cache = codec->reg_cache;
-
-	for (i = 0 ; i < codec->driver->reg_cache_size ; i += step)
+	for (i = 0 ; i < size ; i += step)
 		cache[i] = alc5624_hw_read(codec, i);
 }
 
@@ -1483,11 +1533,15 @@ static void alc5624_fill_cache(struct snd_soc_codec *codec)
 static int alc5624_sync(struct snd_soc_codec *codec)
 {
 	/*struct alc5624_priv *alc5624 = snd_soc_codec_get_drvdata(codec);*/
-	int i, step = codec->driver->reg_cache_step;
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	int i, step = 2, size = REGISTER_COUNT;
+#else
+	int i, step = codec->driver->reg_cache_step, size = codec->driver->reg_cache_size;
+#endif
 	u16 *cache = codec->reg_cache;
 	u8 data[3];
 
-	for (i = 2 ; i < codec->driver->reg_cache_size ; i += step) {
+	for (i = 2 ; i < size ; i += step) {
 		data[0] = i;
 		data[1] = cache[i] >> 8;
 		data[2] = cache[i];
@@ -1497,20 +1551,45 @@ static int alc5624_sync(struct snd_soc_codec *codec)
 	return 0;
 };
 
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
 static int alc5624_suspend(struct snd_soc_codec *codec, pm_message_t mesg)
 {
+#else
+static int alc5624_suspend(struct platform_device *pdev, pm_message_t mesg)
+{
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+	struct snd_soc_codec *codec = socdev->card->codec;
+#endif
+	struct alc5624_priv *alc5624 = snd_soc_codec_get_drvdata(codec);
+
 	dev_dbg(codec->dev, "%s()\n", __FUNCTION__);
 	alc5624_set_bias_level(codec, SND_SOC_BIAS_OFF);
+	
+	/* Disable the codec MCLK */
+	clk_disable(alc5624->mclk);
+	
 	return 0;
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
 static int alc5624_resume(struct snd_soc_codec *codec)
 {
 	/* Get the requested mode */
 	enum snd_soc_bias_level level = codec->dapm.suspend_bias_level;
-
+#else
+static int alc5624_resume(struct platform_device *pdev)
+{
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+	struct snd_soc_codec *codec = socdev->card->codec;
+	/* Get the requested mode */
+	enum snd_soc_bias_level level = codec->suspend_bias_level;
+#endif
+	struct alc5624_priv *alc5624 = snd_soc_codec_get_drvdata(codec);
+	
 	dev_dbg(codec->dev, "%s()\n", __FUNCTION__);	
+	
+	/* Enable the codec MCLK */
+	clk_enable(alc5624->mclk);
 	
 	/* Reset the codec */
 	alc5624_reset(codec);
@@ -1529,7 +1608,9 @@ static int alc5624_resume(struct snd_soc_codec *codec)
 static int alc5624_probe(struct snd_soc_codec *codec)
 {
 	struct alc5624_priv *alc5624 = snd_soc_codec_get_drvdata(codec);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)	
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
+#endif
 	int ret,i;
 
 	/* Get the default read and write functions for this bus */
@@ -1564,6 +1645,8 @@ static int alc5624_probe(struct snd_soc_codec *codec)
 	/* power on device */
 	alc5624_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+	/* On linux 2.6.38+ we need to register controls here */
 	snd_soc_add_controls(codec, alc5624_snd_controls,
 					ARRAY_SIZE(alc5624_snd_controls));
 
@@ -1572,7 +1655,8 @@ static int alc5624_probe(struct snd_soc_codec *codec)
 
 	/* set up audio path interconnects */
 	snd_soc_dapm_add_routes(dapm, audio_map, ARRAY_SIZE(audio_map));
-
+#endif
+	
 	return ret;
 }
 
@@ -1583,90 +1667,200 @@ static int alc5624_remove(struct snd_soc_codec *codec)
 	return 0;
 }
 
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
 static struct snd_soc_codec_driver soc_codec_device_alc5624 = {
 	.probe 				= alc5624_probe,
 	.remove 			= alc5624_remove,
 	.suspend 			= alc5624_suspend,
 	.resume 			= alc5624_resume,
-	.volatile_register 	= rt5424_volatile_register,
+	.volatile_register 	= alc5624_volatile_register,
 	.set_bias_level 	= alc5624_set_bias_level,
 	.reg_cache_size 	= REGISTER_COUNT,
 	.reg_word_size 		= sizeof(u16),
 	.reg_cache_step 	= 2,
 };
+#endif
 
-static int alc5624_i2c_probe(struct i2c_client *client,
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)	
+static struct snd_soc_codec *alc5624_codec = NULL;
+#endif
+
+static __devinit int alc5624_i2c_probe(struct i2c_client *client,
 				const struct i2c_device_id *id)
 {
 	struct alc5624_platform_data *pdata;
 	struct alc5624_priv *alc5624;
-	int ret, vid1, vid2;
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)		
+	struct snd_soc_codec *codec;
+#endif
+	struct clk* mclk;
+	
+	int ret, vid1, vid2, ver;
 
+	pdata = client->dev.platform_data;
+	if (!pdata) {
+		dev_err(&client->dev, "Missing platform data\n");	
+		return -ENODEV;
+	}
+	
+	/* Get the MCLK */
+	mclk = clk_get(NULL, pdata->mclk);
+	if (IS_ERR(mclk)) {
+		dev_err(&client->dev, "Unable to get MCLK\n");
+		return -ENODEV;
+	} 
+	
+	/* Enable it */
+	clk_enable(mclk);
+	
+	/* Read chip ids */
 	vid1 = i2c_smbus_read_word_data(client, ALC5624_VENDOR_ID1);
 	if (vid1 < 0) {
 		dev_err(&client->dev, "failed to read I2C\n");
+		clk_disable(mclk);
+		clk_put(mclk);
 		return -EIO;
 	}
 	vid1 = ((vid1 & 0xff) << 8) | (vid1 >> 8);
 
-	vid2 = i2c_smbus_read_byte_data(client, ALC5624_VENDOR_ID2);
+	vid2 = i2c_smbus_read_word_data(client, ALC5624_VENDOR_ID2);
 	if (vid2 < 0) {
 		dev_err(&client->dev, "failed to read I2C\n");
+		clk_disable(mclk);
+		clk_put(mclk);
 		return -EIO;
 	}
-	vid2 = ((vid2 & 0xff) << 8) | (vid2 >> 8);
+	ver  = (vid2 >> 8) & 0xff;	/* Version */
+	vid2 = (vid2 & 0xff); 		/* Device */
 
 	if ((vid1 != 0x10ec) || (vid2 != id->driver_data)) {
 		dev_err(&client->dev, "unknown or wrong codec\n");
 		dev_err(&client->dev, "Expected %x:%lx, got %x:%x\n",
 				0x10ec, id->driver_data,
 				vid1, vid2);
+		clk_disable(mclk);
+		clk_put(mclk);
 		return -ENODEV;
 	}
 
-	dev_dbg(&client->dev, "Found codec id : alc5624\n");
+	dev_dbg(&client->dev, "Found codec id : alc5624, Version: %d\n", ver);
 
 	alc5624 = kzalloc(sizeof(struct alc5624_priv), GFP_KERNEL);
 	if (alc5624 == NULL) {
 		dev_err(&client->dev, "no memory for context\n");
+		clk_disable(mclk);
+		clk_put(mclk);
 		return -ENOMEM;
 	}
 
-	pdata = client->dev.platform_data;
-	if (pdata) {
-	}
 
 	alc5624->id = vid2;
+	
+	/* Store the MCLK clock handle */
+	alc5624->mclk = mclk; 
 
 	i2c_set_clientdata(client, alc5624);
 	alc5624->control_data = client;
 	alc5624->control_type = SND_SOC_I2C;
-	mutex_init(&alc5624->mutex);
 
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)	
+	/* linux 2.6.36 version setup is quite by hand */
+
+	codec = &alc5624->codec;
+	snd_soc_codec_set_drvdata(codec, alc5624);
+	codec->reg_cache = &alc5624->reg_cache[0];
+	codec->reg_cache_size = REGISTER_COUNT;
+
+	mutex_init(&codec->mutex);
+	INIT_LIST_HEAD(&codec->dapm_widgets);
+	INIT_LIST_HEAD(&codec->dapm_paths);
+
+	codec->name = "ALC5624";
+	codec->owner = THIS_MODULE;
+	codec->dai = &alc5624_dai;
+	codec->num_dai = 1;
+	codec->control_data = client;
+	codec->set_bias_level = alc5624_set_bias_level;
+	codec->volatile_register = alc5624_volatile_register;
+	codec->dev = &client->dev;
+	alc5624_dai.dev = &client->dev;
+	alc5624_codec = codec; /* so later probe can attach the codec to the card */
+	
+	/* call the codec probe function */
+	ret = alc5624_probe(codec);
+	if (ret != 0) {
+		dev_err(&client->dev, "Failed to probe codec: %d\n", ret);	
+		clk_disable(mclk);
+		clk_put(mclk);
+		kfree(alc5624);
+		return ret;
+	}
+	
+
+	ret = snd_soc_register_codec(codec);
+	if (ret != 0) {
+		dev_err(&client->dev, "Failed to register codec: %d\n", ret);	
+		clk_disable(mclk);
+		clk_put(mclk);
+		kfree(alc5624);
+		return ret;
+	}
+
+	ret = snd_soc_register_dai(&alc5624_dai);
+	if (ret != 0) {
+		dev_err(&client->dev, "Failed to register DAI: %d\n", ret);	
+		snd_soc_unregister_codec(codec);
+		clk_disable(mclk);
+		clk_put(mclk);
+		kfree(alc5624);
+		return ret;
+	}
+	
+#else
+	/* linux 2.6.38 setup is very streamlined :) */
 	ret = snd_soc_register_codec(&client->dev,
 		&soc_codec_device_alc5624, &alc5624_dai, 1);
 	if (ret != 0) {
 		dev_err(&client->dev, "Failed to register codec: %d\n", ret);
-		mutex_destroy(&alc5624->mutex);
+		clk_disable(mclk);
+		clk_put(mclk);
 		kfree(alc5624);
 	}
+#endif
 
 	return ret;
 }
 
-static int alc5624_i2c_remove(struct i2c_client *client)
+static __devexit int alc5624_i2c_remove(struct i2c_client *client)
 {
 	struct alc5624_priv *alc5624 = i2c_get_clientdata(client);
 
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)	
+	/* linux 2.6.36 version device removal is quite by hand */
+	
+	alc5624_remove(&alc5624->codec);
+	
+	snd_soc_unregister_dai(&alc5624_dai);
+	snd_soc_unregister_codec(&alc5624->codec);
+
+	alc5624_dai.dev = NULL;
+	alc5624_codec = NULL;
+
+#else
+	/* linux 2.6.38 device removal is very streamlined :) */
 	snd_soc_unregister_codec(&client->dev);
-	mutex_destroy(&alc5624->mutex);	
+	
+#endif
+	/* Disable and release clock */
+	clk_disable(alc5624->mclk);
+	clk_put(alc5624->mclk);
+	
 	kfree(alc5624);
 	return 0;
 }
 
 static const struct i2c_device_id alc5624_i2c_table[] = {
-	{"alc5624", 0x2003},
+	{"alc5624", 0x20},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, alc5624_i2c_table);
@@ -1682,13 +1876,67 @@ static struct i2c_driver alc5624_i2c_driver = {
 	.id_table = alc5624_i2c_table,
 };
 
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)	
+static int alc5624_plat_probe(struct platform_device *pdev)
+{
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+	int ret = 0;
+
+	if (!alc5624_codec) {
+		dev_err(&pdev->dev, "I2C client not yet instantiated\n");
+		return -ENODEV;
+	}
+
+	/* Associate the codec to the card */
+	socdev->card->codec = alc5624_codec;
+
+	/* Register pcms */
+	ret = snd_soc_new_pcms(socdev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to register new PCMs\n");
+	}
+
+	/* Register the controls and widgets */
+	snd_soc_add_controls(alc5624_codec, alc5624_snd_controls,
+					ARRAY_SIZE(alc5624_snd_controls));
+
+	snd_soc_dapm_new_controls(alc5624_codec, alc5624_dapm_widgets,
+					ARRAY_SIZE(alc5624_dapm_widgets));
+
+	/* set up audio path interconnects */
+	snd_soc_dapm_add_routes(alc5624_codec, audio_map, ARRAY_SIZE(audio_map));
+	
+	return ret;
+}
+
+/* power down chip */
+static int alc5624_plat_remove(struct platform_device *pdev)
+{
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+
+	/* Release PCMs and DAPM controls */
+	snd_soc_free_pcms(socdev);
+	snd_soc_dapm_free(socdev);
+
+	return 0;
+}
+
+struct snd_soc_codec_device soc_codec_dev_alc5624 = {
+	.probe = 	alc5624_plat_probe,
+	.remove = 	alc5624_plat_remove,
+	.suspend = 	alc5624_suspend,
+	.resume =	alc5624_resume,
+};
+EXPORT_SYMBOL_GPL(soc_codec_dev_alc5624);
+#endif
+
 static int __init alc5624_modinit(void)
 {
 	int ret;
 
 	ret = i2c_add_driver(&alc5624_i2c_driver);
 	if (ret != 0) {
-		printk(KERN_ERR "%s: can't add i2c driver", __func__);
+		pr_err("%s: can't add i2c driver", __func__);
 		return ret;
 	}
 

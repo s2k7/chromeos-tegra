@@ -47,7 +47,7 @@ static void (*wlan_status_cb)(int card_present, void *dev_id) = NULL;
 static void *wlan_status_cb_devid = NULL;
 static int shuttle_wlan_cd = 0; /* WIFI virtual 'card detect' status */
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) && defined(_XOOM_KERNEL)
 
 /* 2.6.36 version has a hook to check card status. Use it */
 static unsigned int shuttle_wlan_status(struct device *dev)
@@ -68,7 +68,7 @@ static int shuttle_wlan_status_register(
 #endif
 
 struct tegra_sdhci_platform_data shuttle_wlan_data = {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) && defined(_XOOM_KERNEL)
 	/* 2.6.36 version has a hook to check card status. Use it */
 	.mmc_data = {
 		.ocr_mask		= MMC_VDD_165_195,
@@ -113,18 +113,15 @@ static struct platform_device *shuttle_sdhci_devices[] __initdata = {
 	&tegra_sdhci_device4,
 };
 
-void __init shuttle_sdhci_initialize_vars()
+/* Register sdhci devices */
+int __init shuttle_sdhci_register_devices(void)
 {
 	/* Plug in platform data */
 	tegra_sdhci_device1.dev.platform_data = &tegra_sdhci_platform_data1;
 	tegra_sdhci_device2.dev.platform_data = &tegra_sdhci_platform_data2;
 	tegra_sdhci_device3.dev.platform_data = &shuttle_wlan_data;
 	tegra_sdhci_device4.dev.platform_data = &tegra_sdhci_platform_data4;
-}
 
-/* Register sdhci devices */
-int __init shuttle_sdhci_register_devices(void)
-{
 	gpio_request(tegra_sdhci_platform_data2.power_gpio, "sdhci2_power");
 	gpio_request(tegra_sdhci_platform_data2.cd_gpio, "sdhci2_cd");
 

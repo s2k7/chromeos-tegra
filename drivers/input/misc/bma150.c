@@ -53,6 +53,7 @@ typedef struct {
 struct bma150ctx {
 	struct i2c_client *client;
 	struct input_dev *input;
+	char phys[32];
 	struct mutex lock;
 	struct delayed_work input_work;
 	struct workqueue_struct *input_work_queue;
@@ -2237,8 +2238,9 @@ static void bma150_input_work_func(struct work_struct *work)
 	mutex_unlock(&ctx->lock);
 }
 
-static int bma150_input_init(struct bma150ctx *ctx)
+static int bma150_input_init(struct i2c_client *client)
 {
+	struct bma150ctx *ctx = i2c_get_clientdata(client);
 	int err;
 
 	ctx->input_work_queue = create_singlethread_workqueue("bma150_input_wq");
@@ -2256,10 +2258,10 @@ static int bma150_input_init(struct bma150ctx *ctx)
 		goto err1;
 	}
 
+	input_set_drvdata(ctx->input, ctx);	
+	
 	ctx->input->open = bma150_input_open;
 	ctx->input->close = bma150_input_close;
-
-	input_set_drvdata(ctx->input, ctx);
 
 	set_bit(EV_ABS, ctx->input->evbit);
 	set_bit(ABS_MISC, ctx->input->absbit);
@@ -2272,7 +2274,14 @@ static int bma150_input_init(struct bma150ctx *ctx)
 	input_set_capability(ctx->input, EV_REL, REL_Y);
 	input_set_capability(ctx->input, EV_REL, REL_Z);
 
-	ctx->input->name = "accelerometer";
+	snprintf(ctx->phys, sizeof(ctx->phys), "%s/input0", dev_name(&client->dev));
+	ctx->input->name = "bma150";
+	ctx->input->phys = ctx->phys;
+	ctx->input->dev.parent = &client->dev;
+	ctx->input->id.bustype = BUS_I2C;
+	ctx->input->id.vendor = 0x0001;
+	ctx->input->id.product = 0x0001;
+	ctx->input->id.version = 0x0100;
 
 	err = input_register_device(ctx->input);
 	if (err) {
@@ -2330,7 +2339,7 @@ static int bma150_probe(struct i2c_client *client, const struct i2c_device_id *i
 		goto exit_kfree2;
 	}
 
-	if ((err = bma150_input_init(ctx))) {
+	if ((err = bma150_input_init(client))) {
 		dev_err(&client->dev, "Unable to register input device\n");
 		err = -ENODEV;
 		goto exit_kfree2;
@@ -2343,17 +2352,17 @@ static int bma150_probe(struct i2c_client *client, const struct i2c_device_id *i
 		goto exit_kfree;
 	}
 
-	dev_info(&client->dev, "Bosch Sensortec Device detected!\nBMA150/BMA380 registered I2C driver!\n");
+	dev_info(&client->dev, "Bosch Sensortec BMA150/BMA380 accelerometer driver registered\n");
 	return 0;
 
-      exit_kfree:
+exit_kfree:
 	bma150_input_cleanup(ctx);
 
-      exit_kfree2:
+exit_kfree2:
 	mutex_destroy(&ctx->lock);
 	kfree(ctx);
 
-      exit:
+exit:
 	return err;
 }
 

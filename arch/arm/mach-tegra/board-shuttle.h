@@ -17,6 +17,7 @@
 #ifndef _MACH_TEGRA_BOARD_SHUTTLE_H
 #define _MACH_TEGRA_BOARD_SHUTTLE_H
 
+
 #define SHUTTLE_BT_RESET 		TEGRA_GPIO_PU0 	/* 0= reset asserted */
 
 /* GPS and 3G cards share the same enabling IO line */
@@ -41,7 +42,7 @@
 #define SHUTTLE_LVDS_SHUTDOWN	TEGRA_GPIO_PB2
 #define SHUTTLE_EN_VDD_PANEL	TEGRA_GPIO_PC6
 #define SHUTTLE_BL_VDD			TEGRA_GPIO_PW0
-#define SHUTTLE_BL_PWM			TEGRA_GPIO_PB4
+#define SHUTTLE_BL_PWM			TEGRA_GPIO_PB4 /* PWM */
 #define SHUTTLE_HDMI_ENB		TEGRA_GPIO_PV5 /* unconfirmed */
 #define SHUTTLE_HDMI_HPD		TEGRA_GPIO_PN7 /* 1=HDMI plug detected */
 
@@ -58,6 +59,8 @@
 #define SHUTTLE_FB1_MEM_SIZE 	SZ_8M			/* Memory reserved for Framebuffer 1: LCD */
 #define SHUTTLE_FB2_MEM_SIZE 	SZ_8M			/* Memory reserved for Framebuffer 2: HDMI out */
 
+#define DYNAMIC_GPU_MEM 1						/* use dynamic memory for GPU */
+
 // TPS6586x GPIOs as registered 
 #define PMU_GPIO_BASE		(TEGRA_NR_GPIOS) 
 #define PMU_GPIO0 			(PMU_GPIO_BASE)
@@ -71,14 +74,14 @@
 #define	SHUTTLE_ENABLE_VDD_VID	TEGRA_GPIO_PT2	/* 1=enabled.  Powers HDMI. Wait 500uS to let it stabilize before returning */
 
 #define SHUTTLE_SDIO2_CD	TEGRA_GPIO_PI5
-#define SHUTTLE_SDIO2_POWER	TEGRA_GPIO_PT3
+#define SHUTTLE_SDIO2_POWER	TEGRA_GPIO_PT3	/* SDIO0 and SDIO2 power */
 
 #define SHUTTLE_SDHC_CD		TEGRA_GPIO_PH2
 #define SHUTTLE_SDHC_WP		TEGRA_GPIO_PH3	/*1=Write Protected */
 #define SHUTTLE_SDHC_POWER	TEGRA_GPIO_PI6
 
 #define SHUTTLE_TS_IRQ		TEGRA_GPIO_PB6
-#define SHUTTLE_TS_ENABLE	TEGRA_GPIO_PAA6 /* 0=enabled */
+#define SHUTTLE_TS_DISABLE	TEGRA_GPIO_PAA6 /* 0=enabled */
 
 #define SHUTTLE_FB_NONROTATE TEGRA_GPIO_PH1 /*1 = screen rotation locked */
 
@@ -88,9 +91,13 @@
 #define SHUTTLE_LOW_BATT	TEGRA_GPIO_PW3 /*(0=low battery)*/
 #define SHUTTLE_IN_S3		TEGRA_GPIO_PAA7 /*1 = in S3 */
 
-#define SHUTTLE_USB1_RESET	TEGRA_GPIO_PB0
+#define SHUTTLE_USB0_VBUS	TEGRA_GPIO_PB0		/* 1= VBUS usb0 */
+#define SHUTTLE_USB1_RESET		TEGRA_GPIO_PV1	/* 0= reset */
 
-#define SHUTTLE_HP_DETECT	TEGRA_GPIO_PW2 /* HeadPhone detect for audio codec: 1=Hedphone plugged */
+#define SHUTTLE_HP_DETECT	TEGRA_GPIO_PW2 	/* HeadPhone detect for audio codec: 1=Hedphone plugged */
+
+#define SHUTTLE_NVEC_REQ	TEGRA_GPIO_PD0	/* Set to 0 to send a command to the NVidia Embedded controller */
+#define SHUTTLE_NVEC_I2C_ADDR 0x8a 			/* I2C address of Tegra, when acting as I2C slave */
 
 #define SHUTTLE_WAKE_KEY_POWER  TEGRA_WAKE_GPIO_PV2
 #define SHUTTLE_WAKE_KEY_RESUME TEGRA_WAKE_GPIO_PV6
@@ -108,52 +115,25 @@ extern void shuttle_init_emc(void);
 extern void shuttle_pinmux_init(void);
 extern void shuttle_clks_init(void);
 
-extern void shuttle_audio_initialize_vars(void);
-extern int shuttle_audio_register_devices(void);
-
-extern void shuttle_gpu_initialize_areas(void);
-extern int shuttle_gpu_register_devices(void);
-
-extern int shuttle_uart_register_devices(void);
-
-extern int shuttle_spi_register_devices(void);
-extern int shuttle_spi_register_devices(void);
-
-extern int shuttle_aes_register_devices(void);
-
-extern int shuttle_wdt_register_devices(void);
-
-extern int shuttle_pmu_register_devices(void);
-
-extern int shuttle_i2c_register_devices(void);
-
-extern int shuttle_power_register_devices(void);
-
-extern int shuttle_keyboard_register_devices(void);
-
-extern int shuttle_touch_register_devices(void);
-
-extern void shuttle_sdhci_initialize_vars(void);
-extern int shuttle_sdhci_register_devices(void);
-
-extern int shuttle_sensors_register_devices(void);
-
-extern int shuttle_wlan_pm_register_devices(void);
-
-extern int shuttle_gps_pm_register_devices(void);
-
-extern int shuttle_gsm_pm_register_devices(void);
-
-extern int shuttle_bt_pm_register_devices(void);
-
-extern int shuttle_nand_register_devices(void);
-
-extern int shuttle_camera_pm_register_devices(void);
-
-extern void shuttle_usb_initialize_vars(void);
 extern int shuttle_usb_register_devices(void);
-
-
+extern int shuttle_audio_register_devices(void);
+extern int shuttle_gpu_register_devices(void);
+extern int shuttle_uart_register_devices(void);
+extern int shuttle_spi_register_devices(void);
+extern int shuttle_aes_register_devices(void);
+extern int shuttle_wdt_register_devices(void);
+extern int shuttle_i2c_register_devices(void);
+extern int shuttle_power_register_devices(void);
+extern int shuttle_keyboard_register_devices(void);
+extern int shuttle_touch_register_devices(void);
+extern int shuttle_sdhci_register_devices(void);
+extern int shuttle_sensors_register_devices(void);
+extern int shuttle_wlan_pm_register_devices(void);
+extern int shuttle_gps_pm_register_devices(void);
+extern int shuttle_gsm_pm_register_devices(void);
+extern int shuttle_bt_pm_register_devices(void);
+extern int shuttle_nand_register_devices(void);
+extern int shuttle_camera_pm_register_devices(void);
 
 #endif
 

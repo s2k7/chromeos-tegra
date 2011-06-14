@@ -54,8 +54,6 @@ static void __shuttle_pm_gsm_toggle_radio(struct device *dev, unsigned int on)
 {
 	struct shuttle_pm_gsm_data *gsm_data = dev_get_drvdata(dev);
 
-	dev_info(dev, "__shuttle_pm_gsm_toggle_radio %d\n", on);
-
 	/* Avoid turning it on or off if already in that state */
 	if (gsm_data->state == on)
 		return;
@@ -191,8 +189,6 @@ static int __init shuttle_gsm_probe(struct platform_device *pdev)
 	struct shuttle_pm_gsm_data *gsm_data;
 	int ret;
 
-	dev_info(&pdev->dev, "starting\n");
-
 	gsm_data = kzalloc(sizeof(*gsm_data), GFP_KERNEL);
 	if (!gsm_data) {
 		dev_err(&pdev->dev, "no memory for context\n");
@@ -249,7 +245,7 @@ static int __init shuttle_gsm_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	dev_info(&pdev->dev, "initialized\n");
+	dev_info(&pdev->dev, "GSM/UMTS RFKill driver loaded\n");
 	
 	return sysfs_create_group(&pdev->dev.kobj, &shuttle_gsm_attr_group);
 }

@@ -1,8 +1,8 @@
 /*
- * Copyright (C) 2011 Google, Inc.
+ * Copyright (C) 2010 Google, Inc.
  *
  * Author:
- *	Colin Cross <ccross@android.com>
+ *	Colin Cross <ccross@google.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -16,6 +16,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/io.h>
@@ -24,6 +25,11 @@
 #include <mach/iomap.h>
 
 #include "tegra2_emc.h"
+
+#define TEGRA_MRR_DIVLD        (1<<20)
+#define TEGRA_EMC_STATUS       0x02b4
+#define TEGRA_EMC_MRR          0x00ec
+static DEFINE_MUTEX(tegra_emc_mrr_lock);
 
 #ifdef CONFIG_TEGRA_EMC_SCALING_ENABLE
 static bool emc_enable = true;
@@ -44,6 +50,35 @@ static inline void emc_writel(u32 val, unsigned long addr)
 static inline u32 emc_readl(unsigned long addr)
 {
 	return readl(emc + addr);
+}
+
+/* read LPDDR2 memory modes */
+static int tegra_emc_read_mrr(unsigned long addr)
+{
+	u32 value;
+	int count = 100;
+
+	mutex_lock(&tegra_emc_mrr_lock);
+	do {
+		emc_readl(TEGRA_EMC_MRR);
+	} while (--count && (emc_readl(TEGRA_EMC_STATUS) & TEGRA_MRR_DIVLD));
+	if (count == 0) {
+		pr_err("%s: Failed to read memory type\n", __func__);
+		BUG();
+	}
+	value = (1 << 30) | (addr << 16);
+	emc_writel(value, TEGRA_EMC_MRR);
+
+	count = 100;
+	while (--count && !(emc_readl(TEGRA_EMC_STATUS) & TEGRA_MRR_DIVLD));
+	if (count == 0) {
+		pr_err("%s: Failed to read memory type\n", __func__);
+		BUG();
+	}
+	value = emc_readl(TEGRA_EMC_MRR) & 0xFFFF;
+	mutex_unlock(&tegra_emc_mrr_lock);
+
+	return value;
 }
 
 static const unsigned long emc_reg_addr[TEGRA_EMC_NUM_REGS] = {
@@ -95,6 +130,61 @@ static const unsigned long emc_reg_addr[TEGRA_EMC_NUM_REGS] = {
 	0x2d8,	/* CFG_CLKTRIM_2 */
 };
 
+
+#define EMC_CFG_2_0   				0x2b8
+#define EMC_FBIO_CFG5_0     		0x104
+#define EMC_MRW_0           		0x0e8
+#define EMC_MRS_0           		0x0cc
+
+#define NVRM_CLOCK_CHANGE_DELAY     2
+
+/* Configures the clock change mechanism of tegra */
+static void tegra_emc_config_clk_change(void)
+{
+
+	/* NO-DEVICE for dummy MRW/MRS commands */
+#	define NULL_DEV_SELECTN (3)
+
+    u32 cfg2, cfg5;
+
+    cfg2 = emc_readl(EMC_CFG_2_0);
+    cfg5 = emc_readl(EMC_FBIO_CFG5_0);
+
+	/* Based on dram type being used */
+    switch (cfg5 & 3)
+    {
+        case 2: /* LPDDR2 */
+
+            // Dummy mode control command to activate PD state machine
+            emc_writel(EMC_MRW_0, NULL_DEV_SELECTN << 30);
+					
+            udelay(NVRM_CLOCK_CHANGE_DELAY);
+
+			cfg2 |=  0x00000002; 	/* Forces dram into power-down during CLKCHANGE. */
+			cfg2 &= ~0x00000004;	/* Disables forcing dram into self-refresh during CLKCHANGE. */
+            break;
+
+        case 3: /* DDR2 */
+
+            // Dummy mode control command to activate PD state machine
+            emc_writel(EMC_MRS_0, NULL_DEV_SELECTN << 30);
+			
+            udelay(NVRM_CLOCK_CHANGE_DELAY);
+
+			cfg2 &= ~0x00000002; 	/* Disables forcing dram into power-down during CLKCHANGE. */
+			cfg2 |=  0x00000004;	/* Forces dram into self-refresh during CLKCHANGE. */
+            break;
+			
+        default:
+            /* "Not supported DRAM type" */
+            return;
+    }
+	
+    cfg2 |= 0x00000001; /* allows EMC and CAR to handshake on PLL divider/source changes. */
+    emc_writel(EMC_CFG_2_0, cfg2);
+}
+
+
 /* Select the closest EMC rate that is higher than the requested rate */
 long tegra_emc_round_rate(unsigned long rate)
 {
@@ -110,10 +200,8 @@ long tegra_emc_round_rate(unsigned long rate)
 
 	pr_debug("%s: %lu\n", __func__, rate);
 
-	/*
-	 * The EMC clock rate is twice the bus rate, and the bus rate is
-	 * measured in kHz
-	 */
+	/* The EMC clock rate is twice the bus rate, and the bus rate is
+	 * measured in kHz */
 	rate = rate / 2 / 1000;
 
 	for (i = 0; i < tegra_emc_table_size; i++) {
@@ -132,14 +220,12 @@ long tegra_emc_round_rate(unsigned long rate)
 	return tegra_emc_table[best].rate * 2 * 1000;
 }
 
-/*
- * The EMC registers have shadow registers.  When the EMC clock is updated
+/* The EMC registers have shadow registers.  When the EMC clock is updated
  * in the clock controller, the shadow registers are copied to the active
  * registers, allowing glitchless memory bus frequency changes.
  * This function updates the shadow registers for a new clock frequency,
  * and relies on the clock lock on the emc clock to avoid races between
- * multiple frequency changes
- */
+ * multiple frequency changes */
 int tegra_emc_set_rate(unsigned long rate)
 {
 	int i;
@@ -148,10 +234,8 @@ int tegra_emc_set_rate(unsigned long rate)
 	if (!tegra_emc_table)
 		return -EINVAL;
 
-	/*
-	 * The EMC clock rate is twice the bus rate, and the bus rate is
-	 * measured in kHz
-	 */
+	/* The EMC clock rate is twice the bus rate, and the bus rate is
+	 * measured in kHz */
 	rate = rate / 2 / 1000;
 
 	for (i = 0; i < tegra_emc_table_size; i++)
@@ -171,8 +255,58 @@ int tegra_emc_set_rate(unsigned long rate)
 	return 0;
 }
 
-void tegra_init_emc(const struct tegra_emc_table *table, int table_size)
+void tegra_init_emc(const struct tegra_emc_chip *chips, int chips_size)
 {
-	tegra_emc_table = table;
-	tegra_emc_table_size = table_size;
+	int i;
+	int vid;
+	int rev_id1;
+	int rev_id2;
+	int pid;
+	int chip_matched = -1;
+
+	vid = tegra_emc_read_mrr(5);
+	rev_id1 = tegra_emc_read_mrr(6);
+	rev_id2 = tegra_emc_read_mrr(7);
+	pid = tegra_emc_read_mrr(8);
+
+	for (i = 0; i < chips_size; i++) {
+		if (chips[i].mem_manufacturer_id >= 0) {
+			if (chips[i].mem_manufacturer_id != vid)
+				continue;
+		}
+		if (chips[i].mem_revision_id1 >= 0) {
+			if (chips[i].mem_revision_id1 != rev_id1)
+				continue;
+		}
+		if (chips[i].mem_revision_id2 >= 0) {
+			if (chips[i].mem_revision_id2 != rev_id2)
+				continue;
+		}
+		if (chips[i].mem_pid >= 0) {
+			if (chips[i].mem_pid != pid)
+				continue;
+		}
+
+		chip_matched = i;
+		break;
+	}
+
+	if (chip_matched >= 0) {
+	
+		pr_info("%s: %s memory found\n", __func__,
+			chips[chip_matched].description);
+		tegra_emc_table = chips[chip_matched].table;
+		tegra_emc_table_size = chips[chip_matched].table_size;
+		
+		/* configure the clock change mechanism of tegra */
+		tegra_emc_config_clk_change();
+		
+	} else {
+		pr_err("%s: Memory not recognized, memory scaling disabled\n",
+			__func__);
+		pr_info("%s: Memory vid     = 0x%04x", __func__, vid);
+		pr_info("%s: Memory rev_id1 = 0x%04x", __func__, rev_id1);
+		pr_info("%s: Memory rev_id2 = 0x%04x", __func__, rev_id2);
+		pr_info("%s: Memory pid     = 0x%04x", __func__, pid);
+	}
 }

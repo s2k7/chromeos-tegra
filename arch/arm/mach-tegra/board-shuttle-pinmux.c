@@ -16,6 +16,7 @@
 
 #include <linux/kernel.h>
 #include <linux/gpio.h>
+#include <linux/version.h>
 #include <linux/init.h>
 #include <mach/pinmux.h>
 
@@ -29,8 +30,13 @@ static __initdata struct tegra_pingroup_config shuttle_pinmux[] = {
 	{TEGRA_PINGROUP_ATC,   TEGRA_MUX_NAND,          TEGRA_PUPD_NORMAL,    TEGRA_TRI_NORMAL},
 	{TEGRA_PINGROUP_ATD,   TEGRA_MUX_GMI,           TEGRA_PUPD_NORMAL,    TEGRA_TRI_NORMAL},
 	{TEGRA_PINGROUP_ATE,   TEGRA_MUX_GMI,           TEGRA_PUPD_NORMAL,    TEGRA_TRI_NORMAL},
+#if 0
 	{TEGRA_PINGROUP_CDEV1, TEGRA_MUX_OSC,           TEGRA_PUPD_PULL_DOWN, TEGRA_TRI_TRISTATE},
 	{TEGRA_PINGROUP_CDEV2, TEGRA_MUX_OSC,           TEGRA_PUPD_PULL_DOWN, TEGRA_TRI_TRISTATE},
+#else
+	{TEGRA_PINGROUP_CDEV1, TEGRA_MUX_PLLA_OUT,      TEGRA_PUPD_NORMAL,    TEGRA_TRI_NORMAL},
+	{TEGRA_PINGROUP_CDEV2, TEGRA_MUX_PLLP_OUT4,     TEGRA_PUPD_PULL_DOWN, TEGRA_TRI_TRISTATE}, 
+#endif
 	{TEGRA_PINGROUP_CRTP,  TEGRA_MUX_CRT,           TEGRA_PUPD_NORMAL,    TEGRA_TRI_TRISTATE},
 	{TEGRA_PINGROUP_CSUS,  TEGRA_MUX_PLLC_OUT1,     TEGRA_PUPD_PULL_DOWN, TEGRA_TRI_TRISTATE},
 	{TEGRA_PINGROUP_DAP1,  TEGRA_MUX_DAP1,          TEGRA_PUPD_NORMAL,    TEGRA_TRI_TRISTATE},
@@ -174,6 +180,25 @@ static __initdata struct tegra_drive_pingroup_config shuttle_drive_pinmux[] = {
 	{TEGRA_DRIVE_PINGROUP_MEMCOMP, TEGRA_HSM_DISABLE, TEGRA_SCHMITT_ENABLE,  TEGRA_DRIVE_DIV_8, TEGRA_PULL_31, TEGRA_PULL_31, TEGRA_SLEW_FASTEST, TEGRA_SLEW_FASTEST}, 
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
+struct tegra_gpio_table {
+	int gpio;
+	bool enable;
+};
+
+static void tegra_gpio_config(struct tegra_gpio_table* tab, int size)
+{
+	int i;
+	for (i = 0; i < size; i++) {
+		if (tab[i].enable) {
+			tegra_gpio_enable(tab[i].gpio);
+		} else {
+			tegra_gpio_disable(tab[i].gpio);
+		}
+	}
+}
+#endif
+
 static struct tegra_gpio_table gpio_table[] = {
 	{ .gpio = SHUTTLE_BT_RESET,			.enable = true },
 	{ .gpio = SHUTTLE_3GGPS_DISABLE,	.enable = true },
@@ -189,7 +214,7 @@ static struct tegra_gpio_table gpio_table[] = {
 	{ .gpio = SHUTTLE_LVDS_SHUTDOWN,	.enable = true },
 	{ .gpio = SHUTTLE_EN_VDD_PANEL,		.enable = true },
 	{ .gpio = SHUTTLE_BL_VDD,			.enable = true },
-	{ .gpio = SHUTTLE_BL_PWM,			.enable = true },
+	{ .gpio = SHUTTLE_BL_PWM,			.enable = false }, /* We want the PWM function here! */
 	{ .gpio = SHUTTLE_HDMI_ENB,			.enable = true },
 	{ .gpio = SHUTTLE_HDMI_HPD,			.enable = true },
 	{ .gpio = SHUTTLE_ENABLE_VDD_VID,	.enable = true },
@@ -199,14 +224,16 @@ static struct tegra_gpio_table gpio_table[] = {
 	{ .gpio = SHUTTLE_SDHC_WP,			.enable = true },
 	{ .gpio = SHUTTLE_SDHC_POWER,		.enable = true },
 	{ .gpio = SHUTTLE_TS_IRQ,			.enable = true },
-	{ .gpio = SHUTTLE_TS_ENABLE,		.enable = true },
+	{ .gpio = SHUTTLE_TS_DISABLE,		.enable = true },
 	{ .gpio = SHUTTLE_FB_NONROTATE,		.enable = true },
 	{ .gpio = SHUTTLE_WLAN_POWER,		.enable = true },
 	{ .gpio = SHUTTLE_WLAN_RESET,		.enable = true },
 	{ .gpio = SHUTTLE_LOW_BATT,			.enable = true },
 	{ .gpio = SHUTTLE_IN_S3,			.enable = true },
+	{ .gpio = SHUTTLE_USB0_VBUS,		.enable = true },
 	{ .gpio = SHUTTLE_USB1_RESET,		.enable = true },
 	{ .gpio = SHUTTLE_HP_DETECT,		.enable = true },
+	{ .gpio = SHUTTLE_NVEC_REQ,			.enable = true },
 };
 
 void __init shuttle_pinmux_init(void)

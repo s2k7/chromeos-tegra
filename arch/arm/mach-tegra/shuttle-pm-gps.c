@@ -39,14 +39,12 @@ static void __shuttle_pm_gps_toggle_radio(struct device *dev, unsigned int on)
 {
 	struct shuttle_pm_gps_data *gps_data = dev_get_drvdata(dev);
 
-	dev_info(dev, "__shuttle_pm_gps_toggle_radio %d\n", on);
-
 	/* Avoid turning it on or off if already in that state */
 	if (gps_data->state == on)
 		return;
 	
 	if (on) {
-	
+
 		regulator_enable(gps_data->regulator[0]);
 		regulator_enable(gps_data->regulator[1]);
 	
@@ -151,8 +149,6 @@ static int __init shuttle_pm_gps_probe(struct platform_device *pdev)
 	struct regulator *regulator[2];
 	struct shuttle_pm_gps_data *gps_data;
 	
-	dev_info(&pdev->dev, "starting\n");
-	
 	gps_data = kzalloc(sizeof(*gps_data), GFP_KERNEL);
 	if (!gps_data) {
 		dev_err(&pdev->dev, "no memory for context\n");
@@ -185,7 +181,7 @@ static int __init shuttle_pm_gps_probe(struct platform_device *pdev)
 	/* Init io pins */
 	shuttle_3g_gps_init();
 
-	dev_info(&pdev->dev, "initialized\n");
+	dev_info(&pdev->dev, "GPS power management driver loaded\n");
 	
 	return sysfs_create_group(&pdev->dev.kobj,
 				  &shuttle_gps_attr_group);

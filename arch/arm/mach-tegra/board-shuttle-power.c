@@ -19,16 +19,19 @@
  * 02111-1307, USA
  */
 #include <linux/i2c.h>
+#include <linux/version.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/fixed.h>
+#include <linux/regulator/virtual_adj.h>
 #include <linux/regulator/consumer.h>
 #include <linux/mfd/tps6586x.h>
 #include <linux/power_supply.h>
-#include <linux/power/tps6586x_battery.h>
+#include <linux/power/nvec_power.h>
 #include <linux/gpio.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/err.h>
+#include <linux/mfd/nvec.h>
 
 #include <asm/io.h>
 
@@ -40,6 +43,7 @@
 #include "board-shuttle.h"
 #include "gpio-names.h"
 #include "devices.h"
+
 
 #define PMC_CTRL		0x0
 #define PMC_CTRL_INTR_LOW	(1 << 17)
@@ -64,7 +68,7 @@ static struct regulator_consumer_supply tps658621_sm2_supply[] = {
 /* PEX_CLK voltage rail : VDDIO_PEX_CLK -> LDO0
 */
 static struct regulator_consumer_supply tps658621_ldo0_supply[] = { /* VDDIO_PEX_CLK */
-	REGULATOR_SUPPLY("pex_clk", NULL)
+	REGULATOR_SUPPLY("vdd_pex_clk_1", NULL)
 };
 
 /* PLLA voltage rail : AVDDPLLX_1V2 -> LDO1AVDDPLLX_1V2 -> LDO1
@@ -92,7 +96,6 @@ static struct regulator_consumer_supply tps658621_ldo1_supply[] = { /* 1V2 */
 */
 static struct regulator_consumer_supply tps658621_ldo2_supply[] = { 
 	REGULATOR_SUPPLY("vdd_rtc", NULL),
-	REGULATOR_SUPPLY("vdd_aon", NULL)
 };
 
 /* PLL_USB voltage rail : AVDD_USB_PLL -> derived from LDO3 (VDD_3V3)
@@ -107,11 +110,11 @@ static struct regulator_consumer_supply tps658621_ldo3_supply[] = { /* 3V3 */
 	REGULATOR_SUPPLY("avdd_usb", NULL),
 	REGULATOR_SUPPLY("avdd_usb_pll", NULL),
 	REGULATOR_SUPPLY("vddio_nand_3v3", NULL), // AON
-	REGULATOR_SUPPLY("vddio_sdio", NULL),
-	REGULATOR_SUPPLY("vddio_mmc", NULL),
+	REGULATOR_SUPPLY("sdio", NULL), /* vddio_sdio */
+	REGULATOR_SUPPLY("vmmc", NULL), /* vddio_mmc, but sdhci.c requires it to be called vmmc*/
 	REGULATOR_SUPPLY("vddio_vi", NULL),
 	REGULATOR_SUPPLY("avdd_lvds", NULL),	
-	REGULATOR_SUPPLY("tmon0", NULL)
+	REGULATOR_SUPPLY("tmon0", NULL),
 };
 
 /* OSC voltage rail : AVDD_OSC -> LDO4
@@ -136,7 +139,6 @@ static struct regulator_consumer_supply tps658621_ldo4_supply[] = { /* VDD IO VI
 	REGULATOR_SUPPLY("vddio_ddr", NULL),       //AON
 	REGULATOR_SUPPLY("vddio_uart", NULL),      //AON
 	REGULATOR_SUPPLY("vddio_bb", NULL),        //AON
-	REGULATOR_SUPPLY("vddio_lcd", NULL),
 	REGULATOR_SUPPLY("vddhostif_bt", NULL),	
 	REGULATOR_SUPPLY("vddio_wlan", NULL)
 };
@@ -178,7 +180,7 @@ static struct regulator_consumer_supply tps658621_rtc_supply[] = {
 
 /* unused */
 /*static struct regulator_consumer_supply tps658621_buck_supply[] = {
-	REGULATOR_SUPPLY("vcc_buck", NULL),
+	REGULATOR_SUPPLY("pll_e", NULL),
 };*/
 
 /* Super power voltage rail for the SOC : VDD SOC
@@ -192,7 +194,6 @@ static struct regulator_consumer_supply tps658621_soc_supply[] = {
 */
 static struct regulator_consumer_supply fixed_buck_tps62290_supply[] = {
 	REGULATOR_SUPPLY("avdd_plle", NULL),
-	REGULATOR_SUPPLY("pex_clk", NULL)
 };
 
 /* MIPI voltage rail (DSI_CSI): AVDD_DSI_CSI -> VDD_1V2
@@ -206,7 +207,7 @@ static struct regulator_consumer_supply fixed_ldo_tps72012_supply[] = {
 /* PEX_CLK voltage rail : PMU_GPIO-1 -> VDD_1V5
 */
 static struct regulator_consumer_supply fixed_ldo_tps74201_supply[] = {
-	REGULATOR_SUPPLY("pex_clk", NULL),
+	REGULATOR_SUPPLY("vdd_pex_clk_2", NULL),
 };
 
 /* HDMI +5V for the pull-up for DDC : VDDIO_VID
@@ -215,13 +216,20 @@ static struct regulator_consumer_supply fixed_ldo_tps74201_supply[] = {
 */
 static struct regulator_consumer_supply fixed_ldo_tps2051B_supply[] = {
 	REGULATOR_SUPPLY("vddio_vid", NULL),
-	REGULATOR_SUPPLY("vddio_vga", NULL)
+	REGULATOR_SUPPLY("vddio_vga", NULL),
+	REGULATOR_SUPPLY("vdd_camera", NULL),
+};
+
+/* VAON */
+static struct regulator_consumer_supply fixed_vdd_aon_supply[] = { 
+	REGULATOR_SUPPLY("vdd_aon", NULL)
 };
 
 
-#define ADJ_REGULATOR_INIT(_id, _minmv, _maxmv)			\
+#define ADJ_REGULATOR_INIT(_id, _minmv, _maxmv, _aon, _bon)	\
 	{													\
 		.constraints = {								\
+			.name = "tps658621_" #_id,					\
 			.min_uV = (_minmv)*1000,					\
 			.max_uV = (_maxmv)*1000,					\
 			.valid_modes_mask = (REGULATOR_MODE_NORMAL |\
@@ -229,48 +237,97 @@ static struct regulator_consumer_supply fixed_ldo_tps2051B_supply[] = {
 			.valid_ops_mask = (REGULATOR_CHANGE_MODE |	\
 					   REGULATOR_CHANGE_STATUS |		\
 					   REGULATOR_CHANGE_VOLTAGE),		\
+			.always_on	= _aon, 						\
+			.boot_on	= _bon, 						\
 		},												\
 		.num_consumer_supplies = ARRAY_SIZE(tps658621_##_id##_supply),\
 		.consumer_supplies = tps658621_##_id##_supply,	\
 	}
 
-	
-static struct regulator_init_data sm0_data  = ADJ_REGULATOR_INIT(sm0,  625, 2700); // 1200
-static struct regulator_init_data sm1_data  = ADJ_REGULATOR_INIT(sm1,  625, 2700); // 1000 (min was 1100)
-static struct regulator_init_data sm2_data  = ADJ_REGULATOR_INIT(sm2, 3000, 4550); // 3700
-static struct regulator_init_data ldo0_data = ADJ_REGULATOR_INIT(ldo0,1250, 3350); // 3300
-static struct regulator_init_data ldo1_data = ADJ_REGULATOR_INIT(ldo1, 725, 1500); // 1100  V-1V2
-static struct regulator_init_data ldo2_data = ADJ_REGULATOR_INIT(ldo2, 725, 1500); // 1200  V-RTC
-static struct regulator_init_data ldo3_data = ADJ_REGULATOR_INIT(ldo3,1250, 3350); // 3300 
-static struct regulator_init_data ldo4_data = ADJ_REGULATOR_INIT(ldo4,1700, 2000); // 1800
-static struct regulator_init_data ldo5_data = ADJ_REGULATOR_INIT(ldo5,1250, 3350); // 2850
-static struct regulator_init_data ldo6_data = ADJ_REGULATOR_INIT(ldo6,1250, 3350); // 2850  V-3V3 USB
-static struct regulator_init_data ldo7_data = ADJ_REGULATOR_INIT(ldo7,1250, 3350); // 3300  V-SDIO
-static struct regulator_init_data ldo8_data = ADJ_REGULATOR_INIT(ldo8,1250, 3350); // 1800  V-2V8
-static struct regulator_init_data ldo9_data = ADJ_REGULATOR_INIT(ldo9,1250, 3350); // 2850
-static struct regulator_init_data rtc_data  = ADJ_REGULATOR_INIT(rtc, 1250, 3350); // 3300
-/*static struct regulator_init_data buck_data = ADJ_REGULATOR_INIT(buck,1250, 3350); // 3300*/
-static struct regulator_init_data soc_data  = ADJ_REGULATOR_INIT(soc, 1250, 3300);
-
-#define FIXED_REGULATOR_INIT(_id)						\
+#define FIXED_REGULATOR_INIT(_id, _mv, _aon, _bon)		\
 	{													\
 		.constraints = {								\
+			.name = #_id,								\
+			.min_uV = (_mv)*1000,						\
+			.max_uV = (_mv)*1000,						\
+			.valid_modes_mask = REGULATOR_MODE_NORMAL,	\
 			.valid_ops_mask = REGULATOR_CHANGE_STATUS,	\
+			.always_on	= _aon, 						\
+			.boot_on	= _bon, 						\
 		},												\
 		.num_consumer_supplies = ARRAY_SIZE( fixed_##_id##_supply),\
 		.consumer_supplies = fixed_##_id##_supply,	\
 	}
 
 	
-static struct regulator_init_data buck_tps62290_data   = FIXED_REGULATOR_INIT(buck_tps62290  ); // 1050 (VDD1.05, AVDD_PEX ... enabled by PMU_GPIO[2] (1=enabled)
-static struct regulator_init_data ldo_tps72012_data    = FIXED_REGULATOR_INIT(ldo_tps72012   ); // 1200 (VDD1.2, VCORE_WIFI ...) enabled by PMU_GPIO[1] (1=enabled)
-static struct regulator_init_data ldo_tps74201_data    = FIXED_REGULATOR_INIT(ldo_tps74201   ); // 1500 (VDD1.5, enabled by PMU_GPIO[0] (0=enabled) - Turn it off as soon as we boot
-static struct regulator_init_data ldo_tps2051B_data    = FIXED_REGULATOR_INIT(ldo_tps2051B   ); // 5000 (VDDIO_VID), enabled by AP_GPIO Port T, pin2, (set as input to enable,outpul low to disable). Powers HDMI. Wait 500uS to let it stabilize before returning
+static struct regulator_init_data sm0_data  		 
+	= ADJ_REGULATOR_INIT(sm0,  625, 2700, 1, 1); // 1200
+static struct regulator_init_data sm1_data  		 
+	= ADJ_REGULATOR_INIT(sm1,  625, 2700, 1, 1); // 1000 (min was 1100)
+static struct regulator_init_data sm2_data  		 
+	= ADJ_REGULATOR_INIT(sm2, 3000, 4550, 1, 1); // 3700
+static struct regulator_init_data ldo0_data 		 
+	= ADJ_REGULATOR_INIT(ldo0,1250, 3350, 0, 0); // 3300
+static struct regulator_init_data ldo1_data 		 
+	= ADJ_REGULATOR_INIT(ldo1, 725, 1500, 1, 1); // 1100  V-1V2
+static struct regulator_init_data ldo2_data 		 
+	= ADJ_REGULATOR_INIT(ldo2, 725, 1500, 1, 1); // 1200  V-RTC
+static struct regulator_init_data ldo3_data 		 
+	= ADJ_REGULATOR_INIT(ldo3,1250, 3350, 0, 0); // 3300 
+static struct regulator_init_data ldo4_data 		 
+	= ADJ_REGULATOR_INIT(ldo4,1700, 2000, 0, 0); // 1800
+static struct regulator_init_data ldo5_data 		 
+	= ADJ_REGULATOR_INIT(ldo5,1250, 3350, 0, 1); // 2850
+static struct regulator_init_data ldo6_data 		 
+	= ADJ_REGULATOR_INIT(ldo6,1250, 3350, 0, 1); // 2850  V-3V3 USB
+static struct regulator_init_data ldo7_data 		 
+	= ADJ_REGULATOR_INIT(ldo7,1250, 3350, 0, 0); // 3300  V-SDIO
+static struct regulator_init_data ldo8_data 		 
+	= ADJ_REGULATOR_INIT(ldo8,1250, 3350, 0, 0); // 1800  V-2V8
+static struct regulator_init_data ldo9_data 		 
+	= ADJ_REGULATOR_INIT(ldo9,1250, 3350, 0, 1); // 2850
+static struct regulator_init_data rtc_data  		 
+	= ADJ_REGULATOR_INIT(rtc, 1250, 3350, 0, 1); // 3300
+/*static struct regulator_init_data buck_data 
+	= ADJ_REGULATOR_INIT(buck,1250, 3350, 0, 0); // 3300*/
+	
+static struct regulator_init_data soc_data  		 
+	= ADJ_REGULATOR_INIT(soc, 1250, 3300, 1, 1);
+static struct regulator_init_data ldo_tps74201_data  
+	= FIXED_REGULATOR_INIT(ldo_tps74201 , 1500, 0, 0 ); // 1500 (VDD1.5, enabled by PMU_GPIO[0] (0=enabled) - Turn it off as soon as we boot
+static struct regulator_init_data buck_tps62290_data 
+	= FIXED_REGULATOR_INIT(buck_tps62290, 1050, 0, 0 ); // 1050 (VDD1.05, AVDD_PEX ... enabled by PMU_GPIO[2] (1=enabled)
+static struct regulator_init_data ldo_tps72012_data  
+	= FIXED_REGULATOR_INIT(ldo_tps72012 , 1200, 0, 0 ); // 1200 (VDD1.2, VCORE_WIFI ...) enabled by PMU_GPIO[1] (1=enabled)
+
+static struct regulator_init_data ldo_tps2051B_data  
+	= FIXED_REGULATOR_INIT(ldo_tps2051B , 5000, 1, 1 ); // 5000 (VDDIO_VID), enabled by AP_GPIO Port T, pin2, 
+														// (set as input to enable,outpul low to disable). Powers HDMI.
+														// Wait 500uS to let it stabilize before returning . Probably also 
+														// used for USB host. It should always be kept enabled. Force enabling
+														// it at boot.
 
 
-#define FIXED_REGULATOR_CONFIG(_id, _name, _mv, _gpio, _activehigh, _itoen, _delay, _atboot, _data)	\
+// vdd_aon is a virtual regulator used to allow frequency and voltage scaling of the CPU/EMC														
+static struct regulator_init_data vdd_aon_data =
+{
+	.constraints = {
+		.name = "ldo_vdd_aon",
+		.min_uV =  625000,
+		.max_uV = 2700000,
+		.valid_modes_mask = (REGULATOR_MODE_NORMAL | REGULATOR_MODE_STANDBY),
+		.valid_ops_mask = (REGULATOR_CHANGE_MODE |REGULATOR_CHANGE_STATUS | REGULATOR_CHANGE_VOLTAGE),
+		.always_on	= 1,
+		.boot_on	= 1,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(fixed_vdd_aon_supply),
+	.consumer_supplies = fixed_vdd_aon_supply,
+};
+
+
+#define FIXED_REGULATOR_CONFIG(_id, _mv, _gpio, _activehigh, _itoen, _delay, _atboot, _data)	\
 	{												\
-		.supply_name 	= _name,					\
+		.supply_name 	= #_id,						\
 		.microvolts  	= (_mv)*1000,				\
 		.gpio        	= _gpio,					\
 		.enable_high	= _activehigh,				\
@@ -280,93 +337,79 @@ static struct regulator_init_data ldo_tps2051B_data    = FIXED_REGULATOR_INIT(ld
 		.init_data		= &_data,					\
 	}
 
-static struct fixed_voltage_config fixed_buck_tps62290_config    = FIXED_REGULATOR_CONFIG(buck_tps62290   ,"buck_tps62290"   , 1050, PMU_GPIO2		, 1,0, 200000, 1, buck_tps62290_data);
-static struct fixed_voltage_config fixed_ldo_tps72012_config     = FIXED_REGULATOR_CONFIG(ldo_tps72012    ,"ldo_tps72012"    , 1200, PMU_GPIO1		, 1,0, 200000, 1, ldo_tps72012_data);
-static struct fixed_voltage_config fixed_ldo_tps74201_config     = FIXED_REGULATOR_CONFIG(ldo_tps74201    ,"ldo_tps74201"    , 1500, PMU_GPIO0		, 0,0, 200000, 0, ldo_tps74201_data);
-static struct fixed_voltage_config fixed_ldo_tps2051B_config     = FIXED_REGULATOR_CONFIG(ldo_tps2051B    ,"ldo_tps2051B"    , 5000, SHUTTLE_ENABLE_VDD_VID , 1,1, 500000, 0, ldo_tps2051B_data);
+/* The next 3 are fixed regulators controlled by PMU GPIOs */
+static struct fixed_voltage_config ldo_tps74201_cfg  
+	= FIXED_REGULATOR_CONFIG(ldo_tps74201  , 1500, PMU_GPIO0 , 0,0, 200000, 0, ldo_tps74201_data);
+static struct fixed_voltage_config buck_tps62290_cfg
+	= FIXED_REGULATOR_CONFIG(buck_tps62290 , 1050, PMU_GPIO2 , 1,0, 200000, 1, buck_tps62290_data);
+static struct fixed_voltage_config ldo_tps72012_cfg
+	= FIXED_REGULATOR_CONFIG(ldo_tps72012  , 1200, PMU_GPIO1 , 1,0, 200000, 1, ldo_tps72012_data);
 
+/* the next one is controlled by a general purpose GPIO */
+static struct fixed_voltage_config ldo_tps2051B_cfg
+	= FIXED_REGULATOR_CONFIG(ldo_tps2051B  , 5000, SHUTTLE_ENABLE_VDD_VID	, 1,1, 500000, 0, ldo_tps2051B_data);
 
-#define FIXED_REGULATOR_DEVICE(_dev) \
-{ \
-	.name	= "reg-fixed-voltage", \
-	.id	= 0, \
-	.dev	= { \
-		.platform_data = & fixed_##_dev##_config, \
-	}, \
-}
+/* the always on vdd_aon: required for freq. scaling to work */
+static struct virtual_adj_voltage_config vdd_aon_cfg = {
+	.supply_name = "REG-AON",
+	.id			 = -1,
+	.min_mV 	 =  625,
+	.max_mV 	 = 2700,
+	.step_mV 	 =   25,
+	.mV			 = 1800,
+	.init_data	 = &vdd_aon_data,
+};
 
-static struct platform_device shuttle_buck_tps62290_reg_device = FIXED_REGULATOR_DEVICE(buck_tps62290);
-static struct platform_device shuttle_ldo_tps72012_reg_device = FIXED_REGULATOR_DEVICE(ldo_tps72012);
-static struct platform_device shuttle_ldo_tps74201_reg_device = FIXED_REGULATOR_DEVICE(ldo_tps74201);
-static struct platform_device shuttle_ldo_tps2051B_reg_device = FIXED_REGULATOR_DEVICE(ldo_tps2051B);
-
-#define ADJ_TPS_REG(_id, _data)			\
-	{					\
-		.id = TPS6586X_ID_##_id,	\
+#define TPS_ADJ_REG(_id, _data)			\
+	{									\
+		.id = TPS6586X_ID_##_id,		\
 		.name = "tps6586x-regulator",	\
-		.platform_data = _data,		\
+		.platform_data = _data,			\
 	}
+
+#define TPS_GPIO_FIX_REG(_id,_data)		\
+	{									\
+		.id = _id,						\
+		.name = "reg-fixed-voltage",	\
+		.platform_data = _data,			\
+	} 	
 
 /* FIXME: do we have rtc alarm irq? */
 static struct tps6586x_rtc_platform_data shuttle_rtc_data = {
 	.irq	= TEGRA_NR_IRQS + TPS6586X_INT_RTC_ALM1, 
 };
 
-/* Battery information */
-static struct tps6586x_ec_platform_data shuttle_ec_platform_data = {
-	.battery_info = {
-		.name = "battery",
-		.technology = POWER_SUPPLY_TECHNOLOGY_LIPO,
-		.voltage_max_design = 4200000,
-		.voltage_min_design = 3000000,
-		.use_for_apm = 1,
-	},
-	.in_s3_state_gpio = SHUTTLE_IN_S3,
-	.low_batt_irq = TEGRA_GPIO_TO_IRQ(SHUTTLE_LOW_BATT),
-};
-
-
 static struct tps6586x_subdev_info tps_devs[] = {
-	ADJ_TPS_REG(SM_0, &sm0_data),
-	ADJ_TPS_REG(SM_1, &sm1_data),
-	ADJ_TPS_REG(SM_2, &sm2_data),
-	ADJ_TPS_REG(LDO_0, &ldo0_data),  /* PEX_CLK */
-	ADJ_TPS_REG(LDO_1, &ldo1_data),  /* BCM4329 - lbee9qnb_vdd*/
-	ADJ_TPS_REG(LDO_2, &ldo2_data),  /* VDD_SOC - soc_main */
-	ADJ_TPS_REG(LDO_3, &ldo3_data),  /* VDDIO BB */
-	ADJ_TPS_REG(LDO_4, &ldo4_data),  /* VDDIO LCD */
-	ADJ_TPS_REG(LDO_5, &ldo5_data),  /* VDDIO VI */
-	ADJ_TPS_REG(LDO_6, &ldo6_data),  /* VDDIO UART */
-	ADJ_TPS_REG(LDO_7, &ldo7_data),  /* VDDIO DDR */
-	ADJ_TPS_REG(LDO_8, &ldo8_data),  /* VDDIO NAND */
-	ADJ_TPS_REG(LDO_9, &ldo9_data),  /* VDDIO SYS */
-	ADJ_TPS_REG(LDO_RTC, &rtc_data), /* RTC */
-	
-	/* VDDIO AUDIO */
-	/* VDDIO SD */
-	/* lbee9qmb */
-	/* vbus draw */
-	
-	ADJ_TPS_REG(LDO_SOC, &soc_data),
-
+	TPS_ADJ_REG(SM_0, &sm0_data),
+	TPS_ADJ_REG(SM_1, &sm1_data),
+	TPS_ADJ_REG(SM_2, &sm2_data),
+	TPS_ADJ_REG(LDO_0, &ldo0_data), 
+	TPS_ADJ_REG(LDO_1, &ldo1_data),
+	TPS_ADJ_REG(LDO_2, &ldo2_data),
+	TPS_ADJ_REG(LDO_3, &ldo3_data),
+	TPS_ADJ_REG(LDO_4, &ldo4_data),
+	TPS_ADJ_REG(LDO_5, &ldo5_data),
+	TPS_ADJ_REG(LDO_6, &ldo6_data),
+	TPS_ADJ_REG(LDO_7, &ldo7_data),
+	TPS_ADJ_REG(LDO_8, &ldo8_data),
+	TPS_ADJ_REG(LDO_9, &ldo9_data),
+	TPS_ADJ_REG(LDO_RTC, &rtc_data),
+	TPS_ADJ_REG(LDO_SOC, &soc_data),
+	TPS_GPIO_FIX_REG(0, &ldo_tps74201_cfg),
+	TPS_GPIO_FIX_REG(1, &buck_tps62290_cfg),
+	TPS_GPIO_FIX_REG(2, &ldo_tps72012_cfg),
 	{
-		.id		= 0,
+		.id		= -1,
 		.name		= "tps6586x-rtc",
 		.platform_data	= &shuttle_rtc_data,
 	},
-	{
-		.id		= 1,
-		.name		= "tps6586x-ec",
-		.platform_data	= &shuttle_ec_platform_data,
-	},
-	
 };
 
 static struct tps6586x_platform_data tps_platform = {
 	.gpio_base = PMU_GPIO_BASE,
 	.irq_base  = PMU_IRQ_BASE,
-	.num_subdevs = ARRAY_SIZE(tps_devs),
 	.subdevs   = tps_devs,
+	.num_subdevs = ARRAY_SIZE(tps_devs),	
 };
 
 static struct i2c_board_info __initdata shuttle_regulators[] = {
@@ -375,6 +418,71 @@ static struct i2c_board_info __initdata shuttle_regulators[] = {
 		.platform_data = &tps_platform,
 	},
 };
+
+
+#define GPIO_FIXED_REG(_id,_data)		\
+	{									\
+		.name = "reg-fixed-voltage",	\
+		.id = _id,						\
+		.dev = { 						\
+			.platform_data = & _data,	\
+		}, 								\
+	} 	
+
+static struct platform_device shuttle_ldo_tps2051B_reg_device = 
+	GPIO_FIXED_REG(3,ldo_tps2051B_cfg); /* id is 3, because 0-2 are already used in the PMU gpio controlled fixed regulators */
+
+static struct platform_device shuttle_vdd_aon_reg_device = 
+{
+	.name = "reg-virtual-adj-voltage",
+	.id = 4,
+	.dev = {
+		.platform_data = &vdd_aon_cfg,
+	},
+};
+
+/* Power controller of Nvidia embedded controller platform data */
+static struct nvec_power_platform_data nvec_power_pdata = {
+	.low_batt_irq = TEGRA_GPIO_TO_IRQ(SHUTTLE_LOW_BATT),	/* If there is a low battery IRQ */
+	.in_s3_state_gpio = SHUTTLE_IN_S3,						/* Gpio pin used to flag that system is suspended */
+	.low_batt_alarm_percent = 5,							/* Percent of batt below which system is forcibly turned off */
+};
+
+/* Power controller of Nvidia embedded controller */
+static struct nvec_subdev_info nvec_subdevs[] = {
+	{
+		.name = "nvec-power",
+		.id   = 1,
+		.platform_data = &nvec_power_pdata,
+	},
+	{
+		.name = "nvec-kbd",
+		.id   = 1,
+	},
+	{
+		.name = "nvec-mouse",
+		.id   = 1,
+	},
+};
+
+/* The NVidia Embedded controller */
+static struct nvec_platform_data nvec_mfd_platform_data = {
+	.i2c_addr	= SHUTTLE_NVEC_I2C_ADDR,
+	.gpio		= SHUTTLE_NVEC_REQ,
+	.irq		= INT_I2C3,
+	.base		= TEGRA_I2C3_BASE,
+	.size		= TEGRA_I2C3_SIZE,
+	.clock		= "tegra-i2c.2",
+	.subdevs	= nvec_subdevs,
+	.num_subdevs = ARRAY_SIZE(nvec_subdevs),
+};
+
+static struct platform_device shuttle_nvec_mfd = {
+	.name = "nvec",
+	.dev = {
+		.platform_data = &nvec_mfd_platform_data,
+	},
+}; 
 
 static void reg_off(const char *reg)
 {
@@ -389,8 +497,8 @@ static void reg_off(const char *reg)
 		return;
 	}
 
-	regulator_enable(regulator);
-	rc = regulator_disable(regulator);
+	/* force disabling of regulator to turn off system */
+	rc = regulator_force_disable(regulator);
 	if (rc)
 		pr_err("%s: regulator_disable returned %d\n", __func__, rc);
 	regulator_put(regulator);
@@ -398,6 +506,10 @@ static void reg_off(const char *reg)
 
 static void shuttle_power_off(void)
 {
+	/* Power down through NvEC */
+	nvec_poweroff();
+	
+	/* Then try by powering off supplies */
 	reg_off("vdd_sm2");
 	reg_off("vdd_core");
 	reg_off("vdd_cpu");
@@ -409,8 +521,45 @@ static void shuttle_power_off(void)
 	}
 }
 
-static int __init shuttle_regulator_init(void)
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,39) || LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
+/* missing from defines ... remove ASAP when defined in devices.c */
+static struct resource tegra_rtc_resources[] = {
+	[0] = {
+		.start	= TEGRA_RTC_BASE,
+		.end	= TEGRA_RTC_BASE + TEGRA_RTC_SIZE - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= INT_RTC,
+		.end	= INT_RTC,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device tegra_rtc_device = {
+	.name		= "tegra_rtc",
+	.id		= -1,
+	.resource	= tegra_rtc_resources,
+	.num_resources	= ARRAY_SIZE(tegra_rtc_resources),
+};
+#endif
+
+static struct platform_device *shuttle_power_devices[] __initdata = {
+	&shuttle_ldo_tps2051B_reg_device,
+	&shuttle_vdd_aon_reg_device,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)	
+	&tegra_pmu_device,
+#else
+	&pmu_device,
+#endif
+	&shuttle_nvec_mfd,
+	&tegra_rtc_device,	
+};
+
+/* Init power management unit of Tegra2 */
+int __init shuttle_power_register_devices(void)
 {
+	int err;
 	void __iomem *pmc = IO_ADDRESS(TEGRA_PMC_BASE);
 	u32 pmc_ctrl;
 
@@ -420,40 +569,18 @@ static int __init shuttle_regulator_init(void)
 	pmc_ctrl = readl(pmc + PMC_CTRL);
 	writel(pmc_ctrl | PMC_CTRL_INTR_LOW, pmc + PMC_CTRL);
 
-	i2c_register_board_info(4, shuttle_regulators, 1);
-	return 0;
-}
-
-static struct platform_device *shuttle_fixedreg_devices[] __initdata = {
-	&shuttle_buck_tps62290_reg_device,
-	&shuttle_ldo_tps72012_reg_device,
-	&shuttle_ldo_tps74201_reg_device,
-	&shuttle_ldo_tps2051B_reg_device,
-};
-
-int __init shuttle_power_register_devices(void)
-{
-	int err;
-
-	err = shuttle_regulator_init();
+	err = i2c_register_board_info(4, shuttle_regulators, 1);
 	if (err < 0) 
 		pr_warning("Unable to initialize regulator\n");
 
 	/* register the poweroff callback */
 	pm_power_off = shuttle_power_off;		
-		
-	/* Register all the fixed regulators */
-	return platform_add_devices(shuttle_fixedreg_devices, ARRAY_SIZE(shuttle_fixedreg_devices));
-}
 
-static struct platform_device *shuttle_pmu_devices[] __initdata = {
-	&tegra_pmu_device,
-	&tegra_rtc_device,
-};
-
-/* Init power management unit of Tegra2 */
-int __init shuttle_pmu_register_devices(void)
-{
-	return platform_add_devices(shuttle_pmu_devices, ARRAY_SIZE(shuttle_pmu_devices));
+	/* signal that power regulators have fully specified constraints */
+	regulator_has_full_constraints();
+	
+	/* register all pm devices - This must come AFTER the registration of the TPS i2c interfase,
+	   as we need the GPIO definitions exported by that driver */
+	return platform_add_devices(shuttle_power_devices, ARRAY_SIZE(shuttle_power_devices));
 }
 

@@ -15,6 +15,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/version.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/slab.h>
@@ -83,10 +84,16 @@ static int tps6586x_ldo_list_voltage(struct regulator_dev *rdev,
 	return info->voltages[selector] * 1000;
 }
 
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+static int __tps6586x_ldo_set_voltage(struct device *parent,
+				      struct tps6586x_regulator *ri,
+				      int min_uV, int max_uV,
+					  unsigned *selector)
+#else
 static int __tps6586x_ldo_set_voltage(struct device *parent,
 				      struct tps6586x_regulator *ri,
 				      int min_uV, int max_uV)
+#endif
 {
 	int val, uV;
 	uint8_t mask;
@@ -101,6 +108,10 @@ static int __tps6586x_ldo_set_voltage(struct device *parent,
 		/* use the first in-range value */
 		if (min_uV <= uV && uV <= max_uV) {
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)		
+			*selector = val;
+#endif
+			
 			val <<= ri->volt_shift;
 			mask = ((1 << ri->volt_nbits) - 1) << ri->volt_shift;
 
@@ -111,13 +122,23 @@ static int __tps6586x_ldo_set_voltage(struct device *parent,
 	return -EINVAL;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 static int tps6586x_ldo_set_voltage(struct regulator_dev *rdev,
-				    int min_uV, int max_uV, unsigned* selector)
+				    int min_uV, int max_uV, unsigned *selector)
+#else
+static int tps6586x_ldo_set_voltage(struct regulator_dev *rdev,
+				    int min_uV, int max_uV)
+#endif
 {
 	struct tps6586x_regulator *ri = rdev_get_drvdata(rdev);
 	struct device *parent = to_tps6586x_dev(rdev);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+	return __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV,
+									  selector);
+#else
 	return __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV);
+#endif
 }
 
 static int tps6586x_ldo_get_voltage(struct regulator_dev *rdev)
@@ -140,14 +161,24 @@ static int tps6586x_ldo_get_voltage(struct regulator_dev *rdev)
 	return ri->voltages[val] * 1000;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 static int tps6586x_dvm_set_voltage(struct regulator_dev *rdev,
-				    int min_uV, int max_uV, unsigned* selector)
+				    int min_uV, int max_uV, unsigned *selector)
+#else
+static int tps6586x_dvm_set_voltage(struct regulator_dev *rdev,
+				    int min_uV, int max_uV)
+#endif
 {
 	struct tps6586x_regulator *ri = rdev_get_drvdata(rdev);
 	struct device *parent = to_tps6586x_dev(rdev);
 	int ret;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)	
+	ret = __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV,
+									 selector);
+#else
 	ret = __tps6586x_ldo_set_voltage(parent, ri, min_uV, max_uV);
+#endif
 	if (ret)
 		return ret;
 

@@ -14,6 +14,8 @@
  * GNU General Public License for more details.
  *
  */
+ 
+/* Touchscreen is in dvc bus */
 
 #include <linux/resource.h>
 #include <linux/platform_device.h>
@@ -32,21 +34,32 @@
 #include "board-shuttle.h"
 #include "gpio-names.h"
 
+static atomic_t shuttle_touch_powered = ATOMIC_INIT(0);
 static void shuttle_touch_enable(void)
 {
-	gpio_direction_output(SHUTTLE_TS_ENABLE, 0); // Power up
-	gpio_direction_output(SHUTTLE_TS_IRQ,  0); // Reset
-	msleep(20);
-	gpio_set_value(TEGRA_GPIO_PB6,  1); // End of reset
-	gpio_direction_input(SHUTTLE_TS_IRQ); // End of reset
-	msleep(10);
+	if (atomic_inc_return(&shuttle_touch_powered) == 1) {
+	
+		pr_info("Enabling touchscreen\n");
+		
+		gpio_direction_output(SHUTTLE_TS_IRQ,  0); // Reset	
+		gpio_direction_output(SHUTTLE_TS_DISABLE, 0); // Power up
+		msleep(20);
+		
+		gpio_set_value(SHUTTLE_TS_IRQ, 1); 
+		gpio_direction_input(SHUTTLE_TS_IRQ);
+		msleep(10);
+	}
 }
 
 static void shuttle_touch_disable(void)
 {
-	gpio_direction_output(SHUTTLE_TS_IRQ,  0); // Reset
-	gpio_direction_output(SHUTTLE_TS_ENABLE, 1); // Power down
-	msleep(10);
+	if (atomic_dec_return(&shuttle_touch_powered) == 0) {
+	
+		pr_info("Disabling touchscreen\n");
+		gpio_direction_output(SHUTTLE_TS_DISABLE, 1); // Power down
+		msleep(10);
+		
+	}
 }
 
 struct it7260_platform_data it7260_pdata = {
@@ -54,7 +67,7 @@ struct it7260_platform_data it7260_pdata = {
 	.enable_tp = shuttle_touch_enable,		/* function to enable the touchpad */
 };
 
-static struct i2c_board_info __initdata shuttle_i2c_bus1_touch_info_it[] = {
+static struct i2c_board_info __initdata shuttle_i2c_bus4_touch_info_it[] = {
 	{
 		I2C_BOARD_INFO("it7260", 0x46),
 		.irq = TEGRA_GPIO_TO_IRQ(SHUTTLE_TS_IRQ),
@@ -68,7 +81,7 @@ struct egalax_platform_data egalax_pdata = {
 };
 
 
-static struct i2c_board_info __initdata shuttle_i2c_bus1_touch_info_egalax[] = {
+static struct i2c_board_info __initdata shuttle_i2c_bus4_touch_info_egalax[] = {
 	{
 		I2C_BOARD_INFO("egalax", 0x04),
 		.irq = TEGRA_GPIO_TO_IRQ(SHUTTLE_TS_IRQ),
@@ -78,14 +91,14 @@ static struct i2c_board_info __initdata shuttle_i2c_bus1_touch_info_egalax[] = {
 
 int __init shuttle_touch_register_devices(void)
 {
-	gpio_request(SHUTTLE_TS_ENABLE, "touch_power_down");
-	gpio_direction_output(SHUTTLE_TS_ENABLE,1);
+	gpio_request(SHUTTLE_TS_DISABLE, "touch_power_down");
+	gpio_direction_output(SHUTTLE_TS_DISABLE,1); /* we start with the touchscreen disabled */
 
 	gpio_request(SHUTTLE_TS_IRQ, "touch_irq");
-	gpio_direction_output(SHUTTLE_TS_IRQ,0);
-	
-	i2c_register_board_info(0, shuttle_i2c_bus1_touch_info_it, 1);
-	i2c_register_board_info(0, shuttle_i2c_bus1_touch_info_egalax, 1);
+	gpio_direction_input(SHUTTLE_TS_IRQ);
+
+	i2c_register_board_info(4, shuttle_i2c_bus4_touch_info_it, 1);
+	i2c_register_board_info(4, shuttle_i2c_bus4_touch_info_egalax, 1);
 
 	return 0;
 }

@@ -46,32 +46,10 @@
 #include "gpio-names.h"
 #include "devices.h"
 
-/* Shuttle uses UARTB for the debug port. */
-static struct plat_serial8250_port debug_uart_platform_data[] = {
-	{
-		.membase 	= IO_ADDRESS(TEGRA_UARTB_BASE),
-		.mapbase 	= TEGRA_UARTB_BASE,
-		.irq 		= INT_UARTB,
-		.flags		= UPF_BOOT_AUTOCONF,
-		.iotype		= UPIO_MEM,
-		.regshift	= 2,
-		.uartclk	= 216000000,
-	}, {
-		.flags		= 0,
-	}
-};
-
-static struct platform_device debug_uart = {
-	.name = "serial8250",
-	.id = PLAT8250_DEV_PLATFORM,
-	.dev = {
-		.platform_data = debug_uart_platform_data,
-	},
-}; 
 
 static struct platform_device *shuttle_uart_devices[] __initdata = {
 	&tegra_uarta_device,
-	&debug_uart,
+	&tegra_uartb_device,
 	&tegra_uartc_device,
 	&tegra_uartd_device,
 	&tegra_uarte_device,

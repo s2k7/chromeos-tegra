@@ -39,7 +39,7 @@
 #include "gpio-names.h"
 
 struct shuttle_pm_camera_data {
-	struct regulator *regulator[2];
+	struct regulator *regulator;
 #ifdef CONFIG_PM
 	int pre_resume_state;
 #endif
@@ -52,16 +52,14 @@ static void __shuttle_pm_camera_power(struct device *dev, unsigned int on)
 {
 	struct shuttle_pm_camera_data *camera_data = dev_get_drvdata(dev);
 
-	dev_info(dev, "__shuttle_pm_camera_power %d\n", on);
-	
 	/* Avoid turning it on if already on */
 	if (camera_data->state == on)
 		return;
 	
 	if (on) {
-
-		regulator_enable(camera_data->regulator[0]);
-		regulator_enable(camera_data->regulator[1]);
+		dev_info(dev, "Enabling Camera\n");
+	
+		regulator_enable(camera_data->regulator);
 	
 		/* Camera power on sequence */
 		gpio_set_value(SHUTTLE_CAMERA_POWER, 0); /* Powerdown */
@@ -71,10 +69,12 @@ static void __shuttle_pm_camera_power(struct device *dev, unsigned int on)
 
 		
 	} else {
+		dev_info(dev, "Disabling Camera\n");
+		
 		gpio_set_value(SHUTTLE_CAMERA_POWER, 0); /* Powerdown */
 		
-		regulator_disable(camera_data->regulator[1]);
-		regulator_disable(camera_data->regulator[0]);
+		regulator_disable(camera_data->regulator);
+
 	}
 	
 	/* store new state */
@@ -156,11 +156,9 @@ static struct attribute_group shuttle_camera_attr_group = {
 /* ----- Initialization/removal -------------------------------------------- */
 static int __init shuttle_camera_probe(struct platform_device *pdev)
 {
-	struct regulator *regulator[2];
+	struct regulator *regulator;
 	struct shuttle_pm_camera_data *camera_data;
 
-	dev_info(&pdev->dev, "starting\n");
-	
 	camera_data = kzalloc(sizeof(*camera_data), GFP_KERNEL);
 	if (!camera_data) {
 		dev_err(&pdev->dev, "no memory for context\n");
@@ -168,30 +166,23 @@ static int __init shuttle_camera_probe(struct platform_device *pdev)
 	}
 	dev_set_drvdata(&pdev->dev, camera_data);
 
-	regulator[0] = regulator_get(&pdev->dev, "vddio_camera");
-	if (IS_ERR(regulator[0])) {
+	regulator = regulator_get(&pdev->dev, "vdd_camera");
+	if (IS_ERR(regulator)) {
 		dev_err(&pdev->dev, "unable to get regulator 0\n");
 		kfree(camera_data);
 		dev_set_drvdata(&pdev->dev, NULL);
 		return -ENODEV;
 	}
 
-	camera_data->regulator[0] = regulator[0];
+	camera_data->regulator = regulator;
 
-	regulator[1] = regulator_get(&pdev->dev, "vcore_wifi");
-	if (IS_ERR(regulator[1])) {
-		dev_err(&pdev->dev, "unable to get regulator 0\n");
-		regulator_put(regulator[0]);
-		kfree(camera_data);
-		dev_set_drvdata(&pdev->dev, NULL);
-		return -ENODEV;
-	}
-	camera_data->regulator[1] = regulator[1];
 	
-	/* Init io pins */
+	/* Init io pins and disable camera */
 	gpio_request(SHUTTLE_CAMERA_POWER, "camera_power");
 	gpio_direction_output(SHUTTLE_CAMERA_POWER, 0);
 
+	dev_info(&pdev->dev, "Camera power management driver registered\n");
+	
 	return sysfs_create_group(&pdev->dev.kobj, &shuttle_camera_attr_group);
 }
 
@@ -201,13 +192,12 @@ static int shuttle_camera_remove(struct platform_device *pdev)
 
 	sysfs_remove_group(&pdev->dev.kobj, &shuttle_camera_attr_group);
 
-	if (!camera_data || !camera_data->regulator[0] || !camera_data->regulator[1])
+	if (!camera_data || !camera_data->regulator)
 		return 0;
 
 	__shuttle_pm_camera_power(&pdev->dev, 0);
 	
-	regulator_put(camera_data->regulator[0]);	
-	regulator_put(camera_data->regulator[1]);
+	regulator_put(camera_data->regulator);	
 
 	kfree(camera_data);
 	dev_set_drvdata(&pdev->dev, NULL);

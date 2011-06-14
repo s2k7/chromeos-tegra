@@ -57,13 +57,12 @@ static void __shuttle_pm_wlan_toggle_radio(struct device *dev, unsigned int on)
 {
 	struct shuttle_pm_wlan_data *wlan_data = dev_get_drvdata(dev);
 
-	dev_info(dev, "__shuttle_pm_wlan_toggle_radio %d\n", on);
-	
 	/* Avoid turning it on if already on */
 	if (wlan_data->state == on)
 		return;
 	
 	if (on) {
+		dev_info(dev, "WLAN adapter enabled\n");
 
 		regulator_enable(wlan_data->regulator[0]);
 		regulator_enable(wlan_data->regulator[1]);
@@ -78,6 +77,8 @@ static void __shuttle_pm_wlan_toggle_radio(struct device *dev, unsigned int on)
 		msleep(2);
 		
 	} else {
+		dev_info(dev, "WLAN adapter disabled\n");
+		
 		gpio_set_value(SHUTTLE_WLAN_RESET, 0); /* Assert reset */
 		gpio_set_value(SHUTTLE_WLAN_POWER, 0); /* Powerdown */
 		
@@ -206,8 +207,6 @@ static int __init shuttle_wlan_probe(struct platform_device *pdev)
 	struct shuttle_pm_wlan_data *wlan_data;
 	int ret;
 
-	dev_info(&pdev->dev, "starting\n");
-	
 	wlan_data = kzalloc(sizeof(*wlan_data), GFP_KERNEL);
 	if (!wlan_data) {
 		dev_err(&pdev->dev, "no memory for context\n");
@@ -227,7 +226,7 @@ static int __init shuttle_wlan_probe(struct platform_device *pdev)
 
 	regulator[1] = regulator_get(&pdev->dev, "vcore_wifi");
 	if (IS_ERR(regulator[1])) {
-		dev_err(&pdev->dev, "unable to get regulator 0\n");
+		dev_err(&pdev->dev, "unable to get regulator 1\n");
 		regulator_put(regulator[0]);
 		kfree(wlan_data);
 		dev_set_drvdata(&pdev->dev, NULL);
@@ -269,6 +268,8 @@ static int __init shuttle_wlan_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	dev_info(&pdev->dev, "WLAN RFKill driver loaded\n");
+	
 	return sysfs_create_group(&pdev->dev.kobj, &shuttle_wlan_attr_group);
 }
 

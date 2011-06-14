@@ -26,6 +26,7 @@
 #include <linux/i2c-tegra.h>
 #include <linux/i2c.h>
 #include <linux/version.h>
+#include <sound/alc5624.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -38,6 +39,12 @@
 #include <mach/iomap.h>
 #include <mach/gpio.h>
 #include <mach/i2s.h>
+#include <mach/spdif.h>
+#include <mach/audio.h>  
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+#include <mach/tegra_das.h>
+#endif
+
 #include <mach/system.h>
 #include <mach/shuttle_audio.h>
 
@@ -46,15 +53,169 @@
 #include "gpio-names.h"
 #include "devices.h"
 
+/* Default music path: I2S1(DAC1)<->Dap1<->HifiCodec
+   Bluetooth to codec: I2S2(DAC2)<->Dap4<->Bluetooth
+*/
 /* For Shuttle, 
 	Codec is ALC5624
-	Codec I2C Address = 0x30(includes R/W bit), PMU i2c segment 0 
+	Codec I2C Address = 0x30(includes R/W bit), i2c #0
 	Codec MCLK = APxx DAP_MCLK1
 */
+
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+static struct tegra_das_platform_data tegra_das_pdata = {
+	.dap_clk = "clk_dev1",
+	.tegra_dap_port_info_table = {
+		/* I2S1 <--> DAC1 <--> DAP1 <--> Hifi Codec */
+		[0] = {
+			.dac_port = tegra_das_port_i2s1,
+			.dap_port = tegra_das_port_dap1,
+			.codec_type = tegra_audio_codec_type_hifi,
+			.device_property = {
+				.num_channels = 2,
+				.bits_per_sample = 16,
+				.rate = 44100,
+				.dac_dap_data_comm_format =
+						dac_dap_data_format_all,
+			},
+		},
+		/* I2S2 <--> DAC2 <--> DAP2 <--> Voice Codec */
+		[1] = {
+			.dac_port = tegra_das_port_i2s2,
+			.dap_port = tegra_das_port_dap2,
+			.codec_type = tegra_audio_codec_type_voice,
+			.device_property = {
+				.num_channels = 1,
+				.bits_per_sample = 16,
+				.rate = 8000,
+				.dac_dap_data_comm_format =
+						dac_dap_data_format_all,
+			},
+		},
+		/* I2S2 <--> DAC2 <--> DAP3 <--> Baseband Codec */
+		[2] = {
+			.dac_port = tegra_das_port_i2s2,
+			.dap_port = tegra_das_port_dap3,
+			.codec_type = tegra_audio_codec_type_baseband,
+			.device_property = {
+				.num_channels = 1,
+				.bits_per_sample = 16,
+				.rate = 8000,
+				.dac_dap_data_comm_format =
+					dac_dap_data_format_dsp,
+			},
+		},
+		/* I2S2 <--> DAC2 <--> DAP4 <--> BT SCO Codec */
+		[3] = {
+			.dac_port = tegra_das_port_i2s2,
+			.dap_port = tegra_das_port_dap4,
+			.codec_type = tegra_audio_codec_type_bluetooth,
+			.device_property = {
+				.num_channels = 1,
+				.bits_per_sample = 16,
+				.rate = 8000,
+				.dac_dap_data_comm_format =
+					dac_dap_data_format_dsp,
+			},
+		},
+		[4] = {
+			.dac_port = tegra_das_port_none,
+			.dap_port = tegra_das_port_none,
+			.codec_type = tegra_audio_codec_type_none,
+			.device_property = {
+				.num_channels = 0,
+				.bits_per_sample = 0,
+				.rate = 0,
+				.dac_dap_data_comm_format = 0,
+			},
+		},
+	},
+
+	.tegra_das_con_table = {
+		[0] = {
+			.con_id = tegra_das_port_con_id_hifi,
+			.num_entries = 2,
+			.con_line = {
+				[0] = {tegra_das_port_i2s1, tegra_das_port_dap1, true},
+				[1] = {tegra_das_port_dap1, tegra_das_port_i2s1, false},
+			},
+		},
+		[1] = {
+			.con_id = tegra_das_port_con_id_bt_codec,
+			.num_entries = 4,
+			.con_line = {
+				[0] = {tegra_das_port_i2s2, tegra_das_port_dap4, true},
+				[1] = {tegra_das_port_dap4, tegra_das_port_i2s2, false},
+				[2] = {tegra_das_port_i2s1, tegra_das_port_dap1, true},
+				[3] = {tegra_das_port_dap1, tegra_das_port_i2s1, false},
+			},
+		},
+		[2] = {
+			.con_id = tegra_das_port_con_id_voicecall_no_bt,
+			.num_entries = 4,
+			.con_line = {
+				[0] = {tegra_das_port_dap2, tegra_das_port_dap3, true},
+				[1] = {tegra_das_port_dap3, tegra_das_port_dap2, false},
+				[2] = {tegra_das_port_i2s1, tegra_das_port_dap1, true},
+				[3] = {tegra_das_port_dap1, tegra_das_port_i2s1, false},
+			},
+		},
+	}
+}; 
+#endif
+
+static struct tegra_audio_platform_data tegra_spdif_pdata = {
+	.dma_on = true,  /* use dma by default */
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	.spdif_clk_rate = 5644800,
+#endif
+};
+
+static struct tegra_audio_platform_data tegra_audio_pdata[] = {
+	/* For I2S1 */
+	[0] = {
+		.i2s_master	= true,
+		.dma_on		= true,  /* use dma by default */
+		.i2s_master_clk = 44100,
+		.dsp_master_clk = 44100,
+		.i2s_clk_rate	= 2822400,
+		.dap_clk	= "clk_dev1",
+		.audio_sync_clk = "audio_2x",
+		.mode		= I2S_BIT_FORMAT_I2S,
+		.fifo_fmt	= I2S_FIFO_PACKED,
+		.bit_size	= I2S_BIT_SIZE_16,
+		.i2s_bus_width = 32,
+		.dsp_bus_width = 16,
+	},
+	/* For I2S2 */
+	[1] = {
+		.i2s_master	= true,
+		.dma_on		= true,  /* use dma by default */
+		.i2s_master_clk = 8000,
+		.dsp_master_clk = 8000,
+		.i2s_clk_rate	= 2000000,
+		.dap_clk	= "clk_dev1",
+		.audio_sync_clk = "audio_2x",
+		.mode		= I2S_BIT_FORMAT_DSP,
+		.fifo_fmt	= I2S_FIFO_16_LSB,
+		.bit_size	= I2S_BIT_SIZE_16,
+		.i2s_bus_width = 32,
+		.dsp_bus_width = 16,
+	}
+}; 
+
+static struct alc5624_platform_data alc5624_pdata = {
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	.mclk = "clk_dev1",
+#else
+	.mclk = "cdev1",
+#endif
+};
 
 static struct i2c_board_info __initdata shuttle_i2c_bus0_board_info[] = {
 	{
 		I2C_BOARD_INFO("alc5624", 0x18),
+		.platform_data = &alc5624_pdata,
 	},
 };
 
@@ -75,52 +236,40 @@ static struct platform_device spdif_dit_device = {
 	.id     = -1,
 }; 
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
-/* Linux Kernel 2.6.36 didn't support an standard linux interfase ... */
-/* This is the Stereo DAC interface. */
-static struct tegra_audio_platform_data tegra_audio_pdata = {
-	.i2s_master		= false, /* Stereo DAC */
-	.dsp_master		= false, /* Don't care */
-	.dma_on			= true,  /* use dma by default */
-	.i2s_clk_rate	= 240000000,
-	.dap_clk		= "clk_dev1",
-	.audio_sync_clk = "audio_2x",
-	.mode			= I2S_BIT_FORMAT_I2S,
-	.fifo_fmt		= I2S_FIFO_PACKED,
-	.bit_size		= I2S_BIT_SIZE_16,
-	.i2s_bus_width 	= 32, /* Using Packed 16 bit data, the dma is 32 bit. */
-	.dsp_bus_width 	= 16, /* When using DSP mode (unused), this should be 16 bit. */
-	.mask			= TEGRA_AUDIO_ENABLE_TX,
-};
-
-/* Bluetooth Audio. */
-static struct tegra_audio_platform_data tegra_audio2_pdata = {
-	.i2s_master		= false, 		/* Bluetooth audio */
-	.dsp_master		= true,  		/* Bluetooth */
-	.dsp_master_clk = 8000, 	/* Bluetooth audio speed */
-	.dma_on			= true,  		/* use dma by default */
-	.i2s_clk_rate	= 2000000, 	/* BCM4329 max bitclock is 2048000 Hz */
-	.dap_clk		= "clk_dev1",
-	.audio_sync_clk = "audio_2x",
-	.mode			= I2S_BIT_FORMAT_DSP, /* Using CODEC in network mode */
-	.fifo_fmt		= I2S_FIFO_16_LSB,
-	.bit_size		= I2S_BIT_SIZE_16,
-	.i2s_bus_width 	= 16, /* Capturing a single timeslot, mono 16 bits */
-	.dsp_bus_width 	= 16,
-	.mask			= TEGRA_AUDIO_ENABLE_TX | TEGRA_AUDIO_ENABLE_RX,
-};
-
-static struct tegra_audio_platform_data tegra_spdif_pdata = {
-	.dma_on			= true,  /* use dma by default */
-	.i2s_clk_rate	= 5644800,
-	.mode			= SPDIF_BIT_MODE_MODE16BIT,
-	.fifo_fmt		= 1,
-};
+static struct platform_device *shuttle_i2s_devices[] __initdata = {
+	&tegra_i2s_device1,
+	&tegra_i2s_device2,
+	&spdif_dit_device,
+	&tegra_spdif_device,
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	&tegra_das_device,
+#else
+	&tegra_pcm_device,
 #endif
+	&shuttle_audio_device, /* this must come last, as we need the DAS to be initialized to access the codec registers ! */
+};
 
-/* Default music path: I2S1(DAC1)<->Dap1<->HifiCodec
-   Bluetooth to codec: I2S2(DAC2)<->Dap4<->Bluetooth
-*/
+int __init shuttle_audio_register_devices(void)
+{
+	int ret;
+	
+	/* Patch in the platform data */
+	tegra_i2s_device1.dev.platform_data = &tegra_audio_pdata[0];
+	tegra_i2s_device2.dev.platform_data = &tegra_audio_pdata[1];
+	tegra_spdif_device.dev.platform_data = &tegra_spdif_pdata;
+	
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,36)
+	tegra_das_device.dev.platform_data = &tegra_das_pdata;
+#endif
+ 
+	ret = i2c_register_board_info(0, shuttle_i2c_bus0_board_info, 
+		ARRAY_SIZE(shuttle_i2c_bus0_board_info)); 
+	if (ret)
+		return ret;
+	return platform_add_devices(shuttle_i2s_devices, ARRAY_SIZE(shuttle_i2s_devices));
+}
+	
+#if 0
 static inline void das_writel(unsigned long value, unsigned long offset)
 {
 	writel(value, IO_ADDRESS(TEGRA_APB_MISC_BASE) + offset);
@@ -131,11 +280,7 @@ static inline void das_writel(unsigned long value, unsigned long offset)
 
 static void init_dac1(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)	
 	bool master = tegra_audio_pdata.i2s_master;
-#else
-	bool master = false;
-#endif
 	/* DAC1 -> DAP1 */
 	das_writel((!master)<<31, APB_MISC_DAS_DAP_CTRL_SEL_0);
 	das_writel(0, APB_MISC_DAS_DAC_INPUT_DATA_CLK_SEL_0);
@@ -144,45 +289,9 @@ static void init_dac1(void)
 static void init_dac2(void)
 {
 	/* DAC2 -> DAP4 for Bluetooth Voice */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)		
 	bool master = tegra_audio2_pdata.dsp_master;
-#else
-	bool master = false;
-#endif
 	das_writel((!master)<<31 | 1, APB_MISC_DAS_DAP_CTRL_SEL_0 + 12);
 	das_writel(3<<28 | 3<<24 | 3,
 			APB_MISC_DAS_DAC_INPUT_DATA_CLK_SEL_0 + 4);
 }
-
-void __init shuttle_audio_initialize_vars(void)
-{
-	/* Init audio connections */
-	init_dac1();
-	init_dac2();
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)	
-	/* Patch in the platform data */
-	tegra_i2s_device1.dev.platform_data = &tegra_audio_pdata;
-	tegra_i2s_device2.dev.platform_data = &tegra_audio2_pdata;
-	tegra_spdif_device.dev.platform_data = &tegra_spdif_pdata;
 #endif
-}
-
-static struct platform_device *shuttle_i2s_devices[] __initdata = {
-	&tegra_i2s_device1,
-	&tegra_i2s_device2,
-	&shuttle_audio_device,
-	&spdif_dit_device,
-	&tegra_spdif_device,
-	&tegra_das_device,
-	&tegra_pcm_device,
-};
-
-int __init shuttle_audio_register_devices(void)
-{
-	int ret = i2c_register_board_info(0, shuttle_i2c_bus0_board_info, 
-		ARRAY_SIZE(shuttle_i2c_bus0_board_info)); 
-	if (ret)
-		return ret;
-	return platform_add_devices(shuttle_i2s_devices, ARRAY_SIZE(shuttle_i2s_devices));
-}

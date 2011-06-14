@@ -29,7 +29,6 @@
 #include <linux/gpio.h>
 #include <linux/input/egalax.h>
 
-#define EGALAX_I2C_NAME "egalax_i2c"
 #define MAX_I2C_LEN		10
 #define MAX_SUPPORT_POINT	4
 #define REPORTID_VENDOR		0x03
@@ -44,6 +43,7 @@ struct ts_point {
 struct eGalax_ts_data {
 	struct i2c_client *client;
 	struct input_dev *input_dev;
+	char phys[32];
 	
 	struct work_struct  work;
 #ifdef CONFIG_HAS_EARLYSUSPEND	
@@ -259,11 +259,15 @@ static int eGalax_ts_probe(
 	}
 	
 	// Fill in information
-	ts->input_dev->name = "eGalax-touchscreen";
-	ts->input_dev->phys = "I2C";
+	input_set_drvdata(ts->input_dev, ts);
+	snprintf(ts->phys, sizeof(ts->phys), "%s/input0", dev_name(&client->dev));
+	ts->input_dev->name = "egalax";
+	ts->input_dev->phys = ts->phys;
+	ts->input_dev->dev.parent = &client->dev;
 	ts->input_dev->id.bustype = BUS_I2C;
 	ts->input_dev->id.vendor = 0x0EEF;
 	ts->input_dev->id.product = 0x0020;
+	ts->input_dev->id.version = 0x0100;
 	
 	// And capabilities
 	set_bit(EV_SYN, ts->input_dev->evbit);
@@ -323,6 +327,11 @@ err_could_not_register:
 	
 err_input_alloc:
 error_not_found:
+
+	// Disable the touchpad
+	if (ts && ts->disable_tp)
+		ts->disable_tp();
+
 	i2c_set_clientdata(client, NULL);
 	kfree(ts);
 
@@ -347,22 +356,6 @@ static int eGalax_ts_remove(struct i2c_client *client)
 	
 	return 0;
 }
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-static void eGalax_ts_early_suspend(struct early_suspend *h)
-{
-	struct eGalax_ts_data *ts;
-	ts = container_of(h, struct eGalax_ts_data, early_suspend);
-	eGalax_ts_suspend(ts->client, PMSG_SUSPEND);
-}
-
-static void eGalax_ts_late_resume(struct early_suspend *h)
-{
-	struct eGalax_ts_data *ts;
-	ts = container_of(h, struct eGalax_ts_data, early_suspend);
-	eGalax_ts_resume(ts->client);
-}
-#endif
 
 static int eGalax_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 {
@@ -423,10 +416,25 @@ static int eGalax_ts_resume(struct i2c_client *client)
 	return 0;
 }
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static void eGalax_ts_early_suspend(struct early_suspend *h)
+{
+	struct eGalax_ts_data *ts;
+	ts = container_of(h, struct eGalax_ts_data, early_suspend);
+	eGalax_ts_suspend(ts->client, PMSG_SUSPEND);
+}
+
+static void eGalax_ts_late_resume(struct early_suspend *h)
+{
+	struct eGalax_ts_data *ts;
+	ts = container_of(h, struct eGalax_ts_data, early_suspend);
+	eGalax_ts_resume(ts->client);
+}
+#endif
 
 static const struct i2c_device_id eGalax_ts_id[] = {
-	{ EGALAX_I2C_NAME, 0 },
-	{ }
+	{ "egalax", 0 },
+	{}
 };
 
 static struct i2c_driver eGalax_ts_driver = {
@@ -445,6 +453,7 @@ static struct i2c_driver eGalax_ts_driver = {
 
 static int __devinit eGalax_ts_init(void)
 {
+	pr_info("eGalax touchscreen driver\n");
 	return i2c_add_driver(&eGalax_ts_driver);
 }
 

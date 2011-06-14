@@ -29,8 +29,6 @@
 #include <linux/gpio.h>
 #include <linux/input/it7260.h>
 
-#define IT7260_I2C_NAME "IT7260_i2c"
-
 struct ts_rawpt {
 	int x,y;		/* coordinates of the touch */
 	int p;			/* Touch pressure */
@@ -44,6 +42,7 @@ struct ts_point {
 struct it7260_ts_data {
 	struct i2c_client *client;
 	struct input_dev *input_dev;
+	char phys[32];
 	
 	int use_irq;
 	struct hrtimer hr_timer;
@@ -210,11 +209,50 @@ static int it7260_wait_for_idle(struct it7260_ts_data *ts)
 	return 0;
 }
 
+static int it7260_flush(struct it7260_ts_data *ts)
+{
+	int ret = 0;
+	dev_info(&ts->client->dev,"flushing buffers\n");	
+	if (ts->client->irq) {
+		// Interrupt assigned, use it to wait
+		unsigned char ucQuery = 0;
+		unsigned char pucPoint[14];
+		int gpio = irq_to_gpio(ts->client->irq);
+		int pollend = jiffies + HZ;	// 1 second of polling, maximum...
+		while( !gpio_get_value(gpio) && jiffies < pollend) {
+			it7260_read_query_buffer(ts,&ucQuery);
+			it7260_read_point_buffer(ts,pucPoint);
+			schedule();
+		};
+		ret = gpio_get_value(gpio) ? 0 : -1;
+	} else {
+		// No interrupt. Use a polling method
+		unsigned char ucQuery = QUERY_BUSY;
+		unsigned char pucPoint[14];
+		int pollend = jiffies + HZ;	// 1 second of polling, maximum...
+		while( (ucQuery & QUERY_BUSY) && jiffies < pollend) {
+			if (it7260_read_query_buffer(ts,&ucQuery) >= 0) {
+				it7260_read_point_buffer(ts,pucPoint);
+			} else {
+				ucQuery = QUERY_BUSY;
+			}
+			schedule();
+		};
+		ret = (ucQuery & QUERY_BUSY) ? -1 : 0;
+		
+	}
+	dev_info(&ts->client->dev,"flushing ended %s\n",(ret < 0) ? "timedout" : "ok");
+	return ret;
+}
+
 // Power on touchscreen
 static int it7260_powerup(struct it7260_ts_data *ts)
 {
 	// Power on device
 	static unsigned char powerOnCmd[] = {0x04, 0x00, 0x00 };
+	
+	// Flush device first
+	it7260_flush(ts);
 	
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle on powerup timed out\n");
@@ -353,21 +391,7 @@ static int it7260_init(struct it7260_ts_data *ts)
 {
 	unsigned char pucCmd[10];
 	int ret = 0,i;
-	int gpio = 14;
-	int pgpio = 214;
-
-	// First, wake up the device
-	gpio_request(gpio, "Touch Wakeup GPIO");
-	gpio_request(pgpio, "Touch Power GPIO");
 	
-	// Push the GPIO down and release it to reset it
-	gpio_direction_output(pgpio, 0); // Power up
-	gpio_direction_output(gpio, 0);
-	mdelay(10);
-	mdelay(10);
-	gpio_direction_output(gpio, 1);
-	gpio_direction_input(gpio);
-
 	// Reinitialize Firmware
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle while reinitializing fw\n");
@@ -380,6 +404,9 @@ static int it7260_init(struct it7260_ts_data *ts)
 		dev_err(&ts->client->dev,"failed to reset touchpad\n");
 		return -1;
 	}
+	
+	// Let the IT reboot and init ... Takes some time ...
+	mdelay(200);
 	
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle on reset touchpad timed out [2]\n");
@@ -395,13 +422,20 @@ static int it7260_init(struct it7260_ts_data *ts)
 		dev_err(&ts->client->dev,"failed to reset touchpad [0x%02x%02x]\n",pucCmd[1],pucCmd[0]);
 		return -1;
 	}
-	
+
 	// Wait until idle
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle on identify cap sensor timed out\n");
 		return -1;
 	}
-		
+
+	// Now, we must poll the device waiting for it to settle... Otherwise, seems it does not respond...	
+	it7260_flush(ts);
+	
+
+	// Don't know why, but firmware tends not to answer .... But, nevertheless, the touchscreen works.
+	//  So, just ignore failures here
+			
 	// Identify
     pucCmd[0] = 0x00; 
 	ret = it7260_write_command_buffer(ts,pucCmd,1);
@@ -431,8 +465,7 @@ static int it7260_init(struct it7260_ts_data *ts)
 	);
 
 	if (memcmp(&pucCmd[1],"ITE7260",7) != 0) {
-		dev_err(&ts->client->dev,"signature not found. Not an IT7260\n");
-		return -1;
+		dev_err(&ts->client->dev,"signature not found. Perhaps IT7260 does not want to ID itself...\n");
 	}
 	
 	// Get firmware information
@@ -440,7 +473,6 @@ static int it7260_init(struct it7260_ts_data *ts)
 	// Wait until idle
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle on firmware version timed out\n");
-		return -1;
 	}
 		
 	pucCmd[0] = 0x01;
@@ -448,20 +480,17 @@ static int it7260_init(struct it7260_ts_data *ts)
 	ret = it7260_write_command_buffer(ts,pucCmd,2);
 	if (ret < 0) {
 		dev_err(&ts->client->dev,"unable to get firmware version\n");
-		return -1;
 	}
 
 	// Wait until idle
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle on firmware version timed out [2]\n");
-		return -1;
 	}
 
 	memset(&pucCmd, 0, sizeof(pucCmd));
 	ret = it7260_read_command_response_buffer(ts,pucCmd,9);
 	if (ret < 0) {
 		dev_err(&ts->client->dev,"failed to read firmware version");
-		return -1;
 	}
 	
 	ret = 0;
@@ -469,16 +498,15 @@ static int it7260_init(struct it7260_ts_data *ts)
 		ret += pucCmd[i];
 	}
 	if (ret == 0) {
-		dev_err(&ts->client->dev,"no flash code");
-		return -1;
+		dev_info(&ts->client->dev,"no flash code");
+	} else {
+		dev_info(&ts->client->dev,"Flash code: %d.%d.%d.%d\n",
+			pucCmd[5],pucCmd[6],pucCmd[7],pucCmd[8]);
 	}
-	dev_info(&ts->client->dev,"Flash code: %d.%d.%d.%d\n",
-		pucCmd[5],pucCmd[6],pucCmd[7],pucCmd[8]);
 
 	// Get 2D Resolution
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle while getting 2D resolutions\n");
-		return -1;
 	}
 		
 	pucCmd[0] = 0x01;
@@ -487,28 +515,33 @@ static int it7260_init(struct it7260_ts_data *ts)
 	ret = it7260_write_command_buffer(ts,pucCmd,3);
 	if (ret < 0) {
 		dev_err(&ts->client->dev,"unable to query for 2D resolutions\n");
-		return -1;
 	}
 	
 	if (it7260_wait_for_idle(ts)) {
 		dev_err(&ts->client->dev,"wait for idle while getting 2D resolutions [2]\n");
-		return -1;
 	}
 		
 	memset(&pucCmd, 0, sizeof(pucCmd));
 	ret = it7260_read_command_response_buffer(ts,pucCmd,7);
 	if (ret < 0) {
 		dev_err(&ts->client->dev,"unable to read 2D resolution\n");
-		return -1;
 	}
 		
 	ts->xres = (int)(pucCmd[2] + (pucCmd[3] << 8));
 	ts->yres = (int)(pucCmd[4] + (pucCmd[5] << 8));
-	
+
+	/* make sure to provide defaults, if touchscreen decided not to answer us */
+	if (ts->xres == 0)
+		ts->xres = 1024;
+	if (ts->yres == 0)
+		ts->yres = 600;
+
 	dev_info(&ts->client->dev,"Resolution: X:%d , Y:%d\n", ts->xres, ts->yres);
-	
+
 	// Recalibrate it
-	return it7260_calibrate_cap_sensor(ts);
+	it7260_calibrate_cap_sensor(ts);
+	
+	return 0;
 }
 
 #define arr_nels(x) (sizeof(x)/sizeof(x[0]))
@@ -894,7 +927,7 @@ static void it7260_readpoints(struct it7260_ts_data *ts)
 	ret = it7260_read_point_buffer(ts,pucPoint);
 
 	// If error...
-	if(ret <= 0)
+	if(ret < 0)
 	{
 		dev_err(&ts->client->dev,"failed to read points [2]\n");
 		if (ts->use_irq)
@@ -1163,11 +1196,15 @@ static int it7260_ts_probe(
 	}
 	
 	// Fill in information
-	ts->input_dev->name = "IT7260-touchscreen";
-	ts->input_dev->phys = "I2C";
+	input_set_drvdata(ts->input_dev, ts);
+	snprintf(ts->phys, sizeof(ts->phys), "%s/input0", dev_name(&client->dev));
+	ts->input_dev->name = "it7260";
+	ts->input_dev->phys = ts->phys;
+	ts->input_dev->dev.parent = &client->dev;
 	ts->input_dev->id.bustype = BUS_I2C;
 	ts->input_dev->id.vendor = 0x0001;
-	ts->input_dev->id.product = 0x7260;
+	ts->input_dev->id.product = 0x0001;
+	ts->input_dev->id.version = 0x0100;
 	
 	// And capabilities
 	set_bit(EV_SYN, ts->input_dev->evbit);
@@ -1264,6 +1301,11 @@ err_could_not_register:
 	
 err_input_alloc:
 error_not_found:
+
+	// Disable the touchpad
+	if (ts && ts->disable_tp)
+		ts->disable_tp();
+
 	i2c_set_clientdata(client, NULL);
 	kfree(ts);
 
@@ -1290,23 +1332,6 @@ static int it7260_ts_remove(struct i2c_client *client)
 	
 	return 0;
 }
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-static void it7260_ts_early_suspend(struct early_suspend *h)
-{
-	struct it7260_ts_data *ts;
-	ts = container_of(h, struct it7260_ts_data, early_suspend);
-	it7260_ts_suspend(ts->client, PMSG_SUSPEND);
-}
-
-static void it7260_ts_late_resume(struct early_suspend *h)
-{
-	struct it7260_ts_data *ts;
-	ts = container_of(h, struct it7260_ts_data, early_suspend);
-	it7260_ts_resume(ts->client);
-}
-#endif
-
 
 static int it7260_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 {
@@ -1361,10 +1386,26 @@ static int it7260_ts_resume(struct i2c_client *client)
 	return 0;
 }
 
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static void it7260_ts_early_suspend(struct early_suspend *h)
+{
+	struct it7260_ts_data *ts;
+	ts = container_of(h, struct it7260_ts_data, early_suspend);
+	it7260_ts_suspend(ts->client, PMSG_SUSPEND);
+}
+
+static void it7260_ts_late_resume(struct early_suspend *h)
+{
+	struct it7260_ts_data *ts;
+	ts = container_of(h, struct it7260_ts_data, early_suspend);
+	it7260_ts_resume(ts->client);
+}
+#endif
+
 
 static const struct i2c_device_id it7260_ts_id[] = {
-	{ IT7260_I2C_NAME, 0 },
-	{ }
+	{ "it7260", 0 },
+	{}
 };
 
 static struct i2c_driver it7260_ts_driver = {
@@ -1383,6 +1424,7 @@ static struct i2c_driver it7260_ts_driver = {
 
 static int __devinit it7260_ts_init(void)
 {
+	pr_info("it7260 touchscreen driver\n");
 	return i2c_add_driver(&it7260_ts_driver);
 }
 
